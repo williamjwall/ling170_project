@@ -261,12 +261,6 @@ def task_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_about_tab() -> None:
-    st.info(
-        "**Scope:** orthographic TextGrid files only (readable words). "
-        "Forced-alignment tiers (`_FAVE`, `_darla`) are excluded. "
-        "**Metadata:** `info_*` text is trimmed of stray spaces (e.g. sex **`M `** vs **`M`** collapse); "
-        "lowercase **`m`**/**`f`** map to **`M`**/**`F`**."
-    )
     st.markdown("### What this dataset is")
     st.markdown(
         """
@@ -354,39 +348,37 @@ def _weighted_filler_rate(g: pd.DataFrame) -> float:
 
 
 def render_filler_tab(f_base: pd.DataFrame) -> None:
-    st.markdown("### Filler & discourse-marker EDA")
+    st.markdown("### Filler EDA")
     st.caption(
-        "Orthographic running text. Rates = regex hits per **100 words** (word-boundary matches on lowercased text)."
+        "Regex counts (*um*, *you know*, *like*, …) on lower-cased orthographic text with word boundaries. "
+        "Rate = hits per 100 words in the filtered set. *like* / *well* / *so* also match grammatical uses."
     )
 
-    with st.expander("How this EDA is organized", expanded=False):
-        st.markdown(
-            """
-            **Situation** groups tasks by *kind of speech* (read-aloud vs. monologue to the RA vs. real phone call vs. pet-directed vs. vowel items).
-
-            **Weighted rate** for a group = total filler hits in that group ÷ total words × 100.
-
-            **Vowel** transcripts are mostly isolated **[a]** productions—not conversational—so filler rates are usually **misleading** next to dialogue. Excluding vowels from situation summaries is recommended.
-
-            Token patterns such as *like*, *well*, and *so* match **every** use (lexical + discourse).
-            """
+    c1, c2 = st.columns(2)
+    with c1:
+        excl_vow = st.checkbox(
+            "Exclude **vowel** task from situation summary",
+            value=True,
+            key="filler_excl_vowels",
+            help="Vowel clips are mostly isolated vowels—not conversational prose.",
+        )
+    with c2:
+        min_words = st.number_input(
+            "Minimum words per transcript",
+            0,
+            500,
+            20,
+            10,
+            key="filler_min_words",
+            help="Drop very short files for stable rates.",
         )
 
-    excl_vow = st.checkbox(
-        "Exclude **vowels** from situation-level summaries",
-        value=True,
-        help="Keeps situation bars interpretable (vowel rows are not continuous speech).",
-    )
-    min_words = st.number_input("Minimum words per file", 0, 500, 20, 10)
-
-    work = f_base.copy()
-    work = work[work["_word_count"] >= min_words]
-
+    work = f_base[f_base["_word_count"] >= min_words].copy()
     if len(work) == 0:
-        st.warning("No rows left after filters. Lower the word threshold or widen sidebar filters.")
+        st.warning("No transcripts left. Lower the minimum words or widen sidebar filters.")
         return
 
-    with st.spinner("Counting fillers…"):
+    with st.spinner("Counting filler patterns…"):
         fw = attach_filler_columns(work)
 
     fw_sit = fw[fw["task"] != "vowels"] if excl_vow else fw
@@ -396,27 +388,22 @@ def render_filler_tab(f_base: pd.DataFrame) -> None:
     overall_rate = 100.0 * total_hits / total_words if total_words else 0.0
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Files analyzed", f"{len(fw):,}")
+    m1.metric("Transcripts", f"{len(fw):,}")
     m2.metric("Total words", f"{total_words:,}")
-    m3.metric("Total filler hits", f"{total_hits:,}")
-    m4.metric("Hits / 100 words (filtered)", f"{overall_rate:.2f}")
+    m3.metric("Total hits", f"{total_hits:,}")
+    m4.metric("Hits / 100 words", f"{overall_rate:.2f}")
 
-    st.markdown("#### Pattern inventory")
     hits = {n: int(fw[f"_f_{n}"].sum()) for n in ALL_FILLER_NAMES}
     inv_df = pd.DataFrame(
-        [{"pattern": k, "hits": v, "per100_corpus": (100.0 * v / total_words) if total_words else 0} for k, v in hits.items()]
+        [
+            {"pattern": k, "hits": v, "per100_all_words": (100.0 * v / total_words) if total_words else 0}
+            for k, v in hits.items()
+        ]
     ).sort_values("hits", ascending=False)
+    st.markdown("**Patterns**")
     st.dataframe(inv_df.round(3), use_container_width=True, hide_index=True)
 
-    st.info(
-        "**Lexical ambiguity:** *like*, *well*, *so* count all occurrences—not just discourse fillers."
-    )
-
-    st.markdown("#### By speaking situation (recommended)")
-    st.caption(
-        "Tasks grouped by elicitation design. "
-        + ("Vowel task omitted from this chart." if excl_vow else "Includes vowel task as its own category.")
-    )
+    st.markdown("**By situation**")
     sit_rows = []
     for cat in EDA_CATEGORY_ORDER:
         g = fw_sit[fw_sit["_eda_category"] == cat]
@@ -426,22 +413,17 @@ def render_filler_tab(f_base: pd.DataFrame) -> None:
             {
                 "situation": EDA_CATEGORY_LABEL.get(cat, cat),
                 "files": len(g),
-                "words": int(g["_word_count"].sum()),
-                "weighted_per100": _weighted_filler_rate(g),
+                "hits_per_100_words": _weighted_filler_rate(g),
             }
         )
     if sit_rows:
         sdf = pd.DataFrame(sit_rows)
         st.dataframe(sdf.round(2), use_container_width=True, hide_index=True)
-        st.bar_chart(sdf.set_index("situation")[["weighted_per100"]])
+        st.bar_chart(sdf.set_index("situation")[["hits_per_100_words"]])
     else:
-        st.warning("No data for situation breakdown after exclusions.")
+        st.warning("No situation breakdown after exclusions.")
 
-    st.markdown("#### By task (with descriptions)")
-    st.caption(
-        "**weighted_per100** = hits in that task ÷ words in that task × 100. "
-        "**mean_per_file_per100** averages per-file rates (equal weight per file)."
-    )
+    st.markdown("**By task**")
     task_weighted = []
     for task, g in fw.groupby("task"):
         w = g["_word_count"].sum()
@@ -450,10 +432,9 @@ def render_filler_tab(f_base: pd.DataFrame) -> None:
             {
                 "task": task,
                 "situation": EDA_CATEGORY_LABEL.get(TASK_TO_EDA.get(task, ""), ""),
-                "description": TASK_SPECS.get(task, {}).get("summary", "—"),
                 "files": len(g),
-                "mean_per_file_per100": g["_filler_per100"].mean(),
                 "weighted_per100": 100.0 * h / w if w else 0.0,
+                "mean_per_file_per100": g["_filler_per100"].mean(),
             }
         )
     _ord = {k: i for i, k in enumerate(EDA_CATEGORY_ORDER)}
@@ -461,107 +442,33 @@ def render_filler_tab(f_base: pd.DataFrame) -> None:
     tw["_o"] = tw["task"].map(lambda t: _ord.get(TASK_TO_EDA.get(t, ""), 99))
     tw = tw.sort_values(["_o", "task"]).drop(columns=["_o"])
     st.dataframe(tw.round(2), use_container_width=True, hide_index=True)
-    chart_t = tw.set_index("task")[["weighted_per100"]].rename(columns={"weighted_per100": "per 100 words"})
-    st.bar_chart(chart_t)
 
-    st.markdown("#### Key contrasts (design-aligned)")
-    st.caption(
-        "Compare **read-aloud** to **monologue-to-RA** tasks only (excludes phone register and pet-directed speech)."
-    )
+    st.markdown("**Contrasts**")
     read_g = fw[fw["task"] == "sentences"]
     mono_g = fw[fw["task"].isin(["instructions", "neutral", "happy", "annoyed"])]
     contrast_rows = [
         {
-            "contrast": "Read-aloud (sentences only)",
+            "contrast": "Read-aloud (sentences)",
             "files": len(read_g),
-            "words": int(read_g["_word_count"].sum()),
-            "weighted_per100": _weighted_filler_rate(read_g),
+            "hits_per_100_words": _weighted_filler_rate(read_g),
         },
         {
             "contrast": "Monologue to RA (instructions + neutral + happy + annoyed)",
             "files": len(mono_g),
-            "words": int(mono_g["_word_count"].sum()),
-            "weighted_per100": _weighted_filler_rate(mono_g),
+            "hits_per_100_words": _weighted_filler_rate(mono_g),
         },
         {
-            "contrast": "Phone call (separate register)",
+            "contrast": "Phone call",
             "files": len(fw[fw["task"] == "phonecall"]),
-            "words": int(fw.loc[fw["task"] == "phonecall", "_word_count"].sum()),
-            "weighted_per100": _weighted_filler_rate(fw[fw["task"] == "phonecall"]),
+            "hits_per_100_words": _weighted_filler_rate(fw[fw["task"] == "phonecall"]),
         },
         {
-            "contrast": "Pet-directed (video task)",
+            "contrast": "Pet-directed (video)",
             "files": len(fw[fw["task"] == "video"]),
-            "words": int(fw.loc[fw["task"] == "video", "_word_count"].sum()),
-            "weighted_per100": _weighted_filler_rate(fw[fw["task"] == "video"]),
+            "hits_per_100_words": _weighted_filler_rate(fw[fw["task"] == "video"]),
         },
     ]
     st.dataframe(pd.DataFrame(contrast_rows).round(2), use_container_width=True, hide_index=True)
-
-    st.markdown("#### By session")
-    sess_rows = []
-    for ses, g in fw.groupby("session"):
-        w = g["_word_count"].sum()
-        h = g["_filler_total"].sum()
-        sess_rows.append(
-            {
-                "session": ses,
-                "files": len(g),
-                "weighted_per100": 100.0 * h / w if w else 0.0,
-            }
-        )
-    ss = pd.DataFrame(sess_rows).sort_values("session")
-    st.dataframe(ss.round(2), use_container_width=True, hide_index=True)
-    st.bar_chart(ss.set_index("session")[["weighted_per100"]])
-
-    if fw["info_sex"].astype(str).str.strip().ne("").any():
-        st.markdown("#### By sex (metadata)")
-        sex_rows = []
-        for sx, g in fw.groupby("info_sex"):
-            if not str(sx).strip():
-                continue
-            w = g["_word_count"].sum()
-            h = g["_filler_total"].sum()
-            sex_rows.append({"sex": sx, "files": len(g), "weighted_per100": 100.0 * h / w if w else 0.0})
-        if sex_rows:
-            sxdf = pd.DataFrame(sex_rows)
-            st.dataframe(sxdf.round(2), use_container_width=True, hide_index=True)
-            st.bar_chart(sxdf.set_index("sex")[["weighted_per100"]])
-
-    if fw["info_l1_english"].astype(str).str.strip().ne("").any():
-        st.markdown("#### By L1 = English (metadata)")
-        l1_rows = []
-        for lx, g in fw.groupby("info_l1_english"):
-            if not str(lx).strip():
-                continue
-            w = g["_word_count"].sum()
-            h = g["_filler_total"].sum()
-            l1_rows.append(
-                {
-                    "l1_english": lx,
-                    "files": len(g),
-                    "weighted_per100": 100.0 * h / w if w else 0.0,
-                }
-            )
-        if l1_rows:
-            l1df = pd.DataFrame(l1_rows).sort_values("weighted_per100", ascending=False)
-            st.dataframe(l1df.round(2), use_container_width=True, hide_index=True)
-            st.bar_chart(l1df.set_index("l1_english")[["weighted_per100"]])
-
-    st.markdown("#### Distribution of per-file filler rate")
-    bins = [0, 1, 2, 3, 5, 8, 12, 20, 1000]
-    fw["_rate_bin"] = pd.cut(fw["_filler_per100"], bins=bins, right=False, include_lowest=True)
-    hist = fw["_rate_bin"].astype(str).value_counts().sort_index()
-    st.bar_chart(hist)
-
-    st.markdown("#### Speakers with highest mean filler rate (min 5 files)")
-    sp = (
-        fw.groupby("speaker_id")
-        .agg(files=("file_name", "count"), mean_per100=("_filler_per100", "mean"), words=("_word_count", "sum"))
-        .reset_index()
-    )
-    sp = sp[sp["files"] >= 5].sort_values("mean_per100", ascending=False).head(15)
-    st.dataframe(sp.round(2), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
