@@ -261,14 +261,11 @@ def task_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_about_tab() -> None:
-    st.markdown("### What this dataset is")
+    st.markdown("### Dataset")
     st.markdown(
-        """
-The **UCLA Speaker Variability Database** is English speech from **202 speakers** (balanced by sex),
-recorded in **three sessions (A, B, C)** with multiple tasks per session—reading, conversation-style prompts,
-phone calls, etc. This app reads the CSV produced by `parse_ucla_box_text_state.py`, which pulled **Praat TextGrid**
-transcripts from a shared Box folder and merged optional rows from `public_database_speaker_info.xlsx`.
-        """
+        "**UCLA Speaker Variability** — ~202 speakers, visits **A–C** (sometimes **D**), multiple tasks per visit "
+        "(reading, monologue, phone, video, etc.). **Fillers** tab: word-level counts in orthographic transcripts. "
+        "CSV from `parse_ucla_box_text_state.py` + optional `public_database_speaker_info.xlsx`."
     )
 
     st.markdown("### Column reference (CSV)")
@@ -341,69 +338,197 @@ transcripts from a shared Box folder and merged optional rows from `public_datab
             st.markdown(f"*Instructions shown to speakers:* {spec['prompt']}")
 
 
-def _weighted_filler_rate(g: pd.DataFrame) -> float:
-    w = g["_word_count"].sum()
-    h = g["_filler_total"].sum()
-    return 100.0 * h / w if w else 0.0
+def _mean_filler_per_file(g: pd.DataFrame) -> float:
+    if len(g) == 0:
+        return 0.0
+    return float(g["_filler_per100"].mean())
+
+
+def _filler_histogram_series(fw: pd.DataFrame) -> pd.Series:
+    """Bin per-file filler rates for a simple frequency chart."""
+    bins = [0, 1, 2, 3, 4, 5, 7, 10, 15, 25, 1e9]
+    labels = ["0–1", "1–2", "2–3", "3–4", "4–5", "5–7", "7–10", "10–15", "15–25", "25+"]
+    s = pd.cut(fw["_filler_per100"], bins=bins, labels=labels, right=False, include_lowest=True)
+    return s.astype(str).value_counts().reindex(labels).fillna(0)
+
+
+def _filler_by_word_count_deciles(fw: pd.DataFrame) -> pd.DataFrame | None:
+    """Mean filler rate by transcript length quantile (confounding check)."""
+    n = len(fw)
+    if n < 15:
+        return None
+    q = min(10, max(4, n // 30))
+    try:
+        g = fw.copy()
+        g["_bin"] = pd.qcut(g["_word_count"], q=q, duplicates="drop")
+    except (ValueError, TypeError):
+        return None
+    out = (
+        g.groupby("_bin", observed=True)
+        .agg(
+            mean_hits_per100=("_filler_per100", "mean"),
+            files=("speaker_id", "count"),
+            med_words=("_word_count", "median"),
+        )
+        .reset_index()
+    )
+    out = out.sort_values("med_words").reset_index(drop=True)
+    out["length_bin"] = [f"Q{i}" for i in range(1, len(out) + 1)]
+    return out[["length_bin", "mean_hits_per100", "files"]]
+
+
+def _filler_breakdown_categorical(fw: pd.DataFrame, col: str) -> pd.DataFrame | None:
+    """Mean filler rate per transcript file, grouped by a metadata column (non-empty rows only)."""
+    if col not in fw.columns:
+        return None
+    x = fw.copy()
+    x["_m"] = x[col].astype(str).str.strip()
+    x = x[x["_m"].ne("") & ~x["_m"].str.lower().eq("nan")]
+    if len(x) == 0:
+        return None
+    rows = []
+    for val in sorted(x["_m"].unique(), key=str):
+        g = x[x["_m"] == val]
+        rows.append(
+            {
+                "category": val,
+                "files": len(g),
+                "mean_per_file_per100": _mean_filler_per_file(g),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if col == "info_sex":
+        _order = {"F": 0, "M": 1}
+        out["_o"] = out["category"].map(lambda c: _order.get(str(c).strip(), 99))
+        out = out.sort_values("_o").drop(columns=["_o"])
+    elif col == "info_db_session":
+        out = out.sort_values("category")
+    else:
+        out = out.sort_values("category")
+    return out
+
+
+def _filler_breakdown_age(fw: pd.DataFrame) -> pd.DataFrame | None:
+    """Age bands with enough spread; uses numeric info_age only."""
+    if "info_age" not in fw.columns:
+        return None
+    x = fw.copy()
+    x["_age"] = pd.to_numeric(x["info_age"], errors="coerce")
+    x = x.loc[x["_age"].notna() & (x["_age"] > 0)]
+    if len(x) < 15:
+        return None
+    q = min(5, max(3, len(x) // 50))
+    try:
+        x["_band"] = pd.qcut(x["_age"], q=q, duplicates="drop")
+    except (ValueError, TypeError):
+        try:
+            x["_band"] = pd.cut(x["_age"], bins=min(5, len(x["_age"].unique())))
+        except ValueError:
+            return None
+    rows = []
+    for band, g in x.groupby("_band", observed=True):
+        rows.append(
+            (
+                float(g["_age"].min()),
+                {
+                    "age_band": str(band),
+                    "files": len(g),
+                    "mean_per_file_per100": _mean_filler_per_file(g),
+                },
+            )
+        )
+    rows.sort(key=lambda t: t[0])
+    return pd.DataFrame([r[1] for r in rows])
+
+
+def _filler_mean_rate_chart(df: pd.DataFrame, index_col: str) -> pd.DataFrame:
+    """Single series: mean filler matches per 100 words, averaging transcript-level rates within each group."""
+    return df.set_index(index_col)[["mean_per_file_per100"]].rename(
+        columns={"mean_per_file_per100": "Mean matches / 100 words"}
+    )
 
 
 def render_filler_tab(f_base: pd.DataFrame) -> None:
-    st.markdown("### Filler EDA")
-    st.caption(
-        "Regex counts (*um*, *you know*, *like*, …) on lower-cased orthographic text with word boundaries. "
-        "Rate = hits per 100 words in the filtered set. *like* / *well* / *so* also match grammatical uses."
-    )
+    st.markdown("### Fillers")
+    with st.expander("What the numbers mean", expanded=False):
+        st.markdown(
+            """
+For **each transcript file** we compute:
+
+**rate (file)** = (all filler pattern matches in that transcript) ÷ (word tokens in that transcript) × 100  
+
+So it is **matches per 100 words** for that recording.
+
+**Situation, task, metadata, age** — bar height is the **mean of those file rates** in the group (every transcript counts equally). Long and short files contribute one value each.
+
+**Patterns** — each bar is still “how often this pattern appears per 100 words,” but counted **across all words in your current filter** (so longer transcripts contribute more words). That answers “what dominates the corpus,” not “typical file.”
+
+**Top summary row “Overall”** — mean file rate (same idea as the group charts).
+
+*like* / *well* / *so* use plain word matching and also hit grammatical uses.
+
+**Sidebar filters** apply to everything on this tab.
+            """
+        )
+    st.caption("Open **What the numbers mean** for definitions. Group charts = **mean of per-file rates** (except *Patterns*).")
 
     c1, c2 = st.columns(2)
     with c1:
         excl_vow = st.checkbox(
-            "Exclude **vowel** task from situation summary",
+            "Drop vowel task from situation chart",
             value=True,
             key="filler_excl_vowels",
-            help="Vowel clips are mostly isolated vowels—not conversational prose.",
+            help="Vowel clips are [a] holds—not dialogue.",
         )
     with c2:
         min_words = st.number_input(
-            "Minimum words per transcript",
+            "Min words per file",
             0,
             500,
             20,
             10,
             key="filler_min_words",
-            help="Drop very short files for stable rates.",
         )
 
     work = f_base[f_base["_word_count"] >= min_words].copy()
     if len(work) == 0:
-        st.warning("No transcripts left. Lower the minimum words or widen sidebar filters.")
+        st.warning("No rows left—relax filters or lower min words.")
         return
 
-    with st.spinner("Counting filler patterns…"):
+    with st.spinner("Counting…"):
         fw = attach_filler_columns(work)
 
     fw_sit = fw[fw["task"] != "vowels"] if excl_vow else fw
 
     total_words = fw["_word_count"].sum()
     total_hits = fw["_filler_total"].sum()
-    overall_rate = 100.0 * total_hits / total_words if total_words else 0.0
+    mean_file_rate = float(fw["_filler_per100"].mean()) if len(fw) else 0.0
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Transcripts", f"{len(fw):,}")
-    m2.metric("Total words", f"{total_words:,}")
-    m3.metric("Total hits", f"{total_hits:,}")
-    m4.metric("Hits / 100 words", f"{overall_rate:.2f}")
+    m1.metric("Files", f"{len(fw):,}")
+    m2.metric("Words", f"{total_words:,}")
+    m3.metric("Matches", f"{total_hits:,}")
+    m4.metric("Mean rate (per file)", f"{mean_file_rate:.2f}")
 
     hits = {n: int(fw[f"_f_{n}"].sum()) for n in ALL_FILLER_NAMES}
     inv_df = pd.DataFrame(
         [
-            {"pattern": k, "hits": v, "per100_all_words": (100.0 * v / total_words) if total_words else 0}
+            {
+                "Pattern": k,
+                "n": v,
+                "%": (100.0 * v / total_hits) if total_hits else 0.0,
+                "/100w": (100.0 * v / total_words) if total_words else 0.0,
+            }
             for k, v in hits.items()
         ]
-    ).sort_values("hits", ascending=False)
-    st.markdown("**Patterns**")
-    st.dataframe(inv_df.round(3), use_container_width=True, hide_index=True)
+    ).sort_values("/100w", ascending=False)
 
-    st.markdown("**By situation**")
+    st.subheader("Patterns")
+    pc = inv_df.set_index("Pattern")[["/100w"]].rename(columns={"/100w": "per 100 words"})
+    st.bar_chart(pc, height=280)
+    st.dataframe(inv_df.round(3), use_container_width=True, hide_index=True, height=220)
+
+    st.subheader("Situation")
     sit_rows = []
     for cat in EDA_CATEGORY_ORDER:
         g = fw_sit[fw_sit["_eda_category"] == cat]
@@ -413,67 +538,129 @@ def render_filler_tab(f_base: pd.DataFrame) -> None:
             {
                 "situation": EDA_CATEGORY_LABEL.get(cat, cat),
                 "files": len(g),
-                "hits_per_100_words": _weighted_filler_rate(g),
+                "mean_per_file_per100": _mean_filler_per_file(g),
             }
         )
     if sit_rows:
         sdf = pd.DataFrame(sit_rows)
-        st.dataframe(sdf.round(2), use_container_width=True, hide_index=True)
-        st.bar_chart(sdf.set_index("situation")[["hits_per_100_words"]])
+        st.bar_chart(_filler_mean_rate_chart(sdf, "situation"), height=280)
+        st.dataframe(
+            sdf.rename(
+                columns={
+                    "situation": "Situation",
+                    "files": "n",
+                    "mean_per_file_per100": "mean / 100 w",
+                }
+            ).round(2),
+            use_container_width=True,
+            hide_index=True,
+            height=200,
+        )
     else:
-        st.warning("No situation breakdown after exclusions.")
+        st.warning("Nothing to show for situation (check filters).")
 
-    st.markdown("**By task**")
+    st.subheader("Task")
     task_weighted = []
     for task, g in fw.groupby("task"):
-        w = g["_word_count"].sum()
-        h = g["_filler_total"].sum()
         task_weighted.append(
             {
                 "task": task,
                 "situation": EDA_CATEGORY_LABEL.get(TASK_TO_EDA.get(task, ""), ""),
                 "files": len(g),
-                "weighted_per100": 100.0 * h / w if w else 0.0,
-                "mean_per_file_per100": g["_filler_per100"].mean(),
+                "mean_per_file_per100": float(g["_filler_per100"].mean()),
             }
         )
     _ord = {k: i for i, k in enumerate(EDA_CATEGORY_ORDER)}
     tw = pd.DataFrame(task_weighted)
     tw["_o"] = tw["task"].map(lambda t: _ord.get(TASK_TO_EDA.get(t, ""), 99))
     tw = tw.sort_values(["_o", "task"]).drop(columns=["_o"])
-    st.dataframe(tw.round(2), use_container_width=True, hide_index=True)
+    st.bar_chart(_filler_mean_rate_chart(tw, "task"), height=300)
+    st.dataframe(
+        tw.rename(
+            columns={
+                "files": "n",
+                "mean_per_file_per100": "mean / 100 w",
+            }
+        ).round(2),
+        use_container_width=True,
+        hide_index=True,
+        height=220,
+    )
 
-    st.markdown("**Contrasts**")
-    read_g = fw[fw["task"] == "sentences"]
-    mono_g = fw[fw["task"].isin(["instructions", "neutral", "happy", "annoyed"])]
-    contrast_rows = [
-        {
-            "contrast": "Read-aloud (sentences)",
-            "files": len(read_g),
-            "hits_per_100_words": _weighted_filler_rate(read_g),
-        },
-        {
-            "contrast": "Monologue to RA (instructions + neutral + happy + annoyed)",
-            "files": len(mono_g),
-            "hits_per_100_words": _weighted_filler_rate(mono_g),
-        },
-        {
-            "contrast": "Phone call",
-            "files": len(fw[fw["task"] == "phonecall"]),
-            "hits_per_100_words": _weighted_filler_rate(fw[fw["task"] == "phonecall"]),
-        },
-        {
-            "contrast": "Pet-directed (video)",
-            "files": len(fw[fw["task"] == "video"]),
-            "hits_per_100_words": _weighted_filler_rate(fw[fw["task"] == "video"]),
-        },
+    c_hist, c_dec = st.columns(2)
+    with c_hist:
+        st.subheader("Rate distribution")
+        hist = _filler_histogram_series(fw)
+        st.bar_chart(pd.DataFrame({"files": hist}), height=220)
+    with c_dec:
+        st.subheader("Rate vs length")
+        dec = _filler_by_word_count_deciles(fw)
+        if dec is not None and len(dec):
+            dc = dec.set_index("length_bin")[["mean_hits_per100"]].rename(
+                columns={"mean_hits_per100": "mean /100w"}
+            )
+            st.bar_chart(dc, height=220)
+        else:
+            st.caption("—")
+
+    st.subheader("Metadata")
+
+    META_PAIRS = [
+        ("info_sex", "Sex"),
+        ("info_l1_english", "L1 English"),
+        ("info_db_session", "DB session"),
+        ("info_db_clipping", "Clip QA"),
     ]
-    st.dataframe(pd.DataFrame(contrast_rows).round(2), use_container_width=True, hide_index=True)
+    for row_i in range(0, len(META_PAIRS), 2):
+        slice_pairs = META_PAIRS[row_i : row_i + 2]
+        cols = st.columns(2)
+        for ci in range(2):
+            with cols[ci]:
+                if ci >= len(slice_pairs):
+                    continue
+                col, title = slice_pairs[ci]
+                st.markdown(f"**{title}**")
+                bd = _filler_breakdown_categorical(fw, col)
+                if bd is not None and len(bd) >= 1:
+                    st.bar_chart(_filler_mean_rate_chart(bd, "category"), height=200)
+                    st.dataframe(
+                        bd.rename(
+                            columns={
+                                "category": "group",
+                                "files": "n",
+                                "mean_per_file_per100": "mean / 100 w",
+                            }
+                        ).round(2),
+                        use_container_width=True,
+                        hide_index=True,
+                        height=140,
+                    )
+                else:
+                    st.caption("—")
+
+    st.subheader("Age")
+    age_df = _filler_breakdown_age(fw)
+    if age_df is not None and len(age_df):
+        st.bar_chart(_filler_mean_rate_chart(age_df, "age_band"), height=220)
+        st.dataframe(
+            age_df.rename(
+                columns={
+                    "age_band": "age",
+                    "files": "n",
+                    "mean_per_file_per100": "mean / 100 w",
+                }
+            ).round(2),
+            use_container_width=True,
+            hide_index=True,
+            height=160,
+        )
+    else:
+        st.caption("—")
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="UCLA variability — explorer",
+        page_title="UCLA Speaker Variability",
         page_icon="🗣️",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -490,14 +677,11 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    st.title("UCLA Speaker Variability — Text explorer")
-    st.markdown(
-        '<p class="muted">Orthographic transcripts only · optional speaker metadata</p>',
-        unsafe_allow_html=True,
-    )
+    st.title("UCLA Speaker Variability")
+    st.markdown('<p class="muted">Transcripts · filler-word counts</p>', unsafe_allow_html=True)
 
     with st.sidebar:
-        st.markdown("### Data source")
+        st.markdown("### CSV")
         csv_path = st.text_input("CSV path", value=str(DEFAULT_CSV), label_visibility="collapsed")
         path = Path(csv_path).expanduser()
         if not path.is_file():
@@ -510,11 +694,11 @@ def main() -> None:
             st.exception(e)
             st.stop()
 
-        st.caption(f"{len(df):,} orthographic rows · **{df['speaker_id'].nunique()}** speakers")
+        st.caption(f"{len(df):,} rows · {df['speaker_id'].nunique()} speakers")
 
         st.markdown("---")
-        st.markdown("### Filters")
-        q = st.text_input("Search text", placeholder="substring…")
+        st.markdown("### Filter")
+        q = st.text_input("Text contains", placeholder="optional…")
 
         tasks = sorted(df["task"].unique().tolist())
         task_pick = st.multiselect("Task", tasks, default=tasks)
@@ -525,15 +709,15 @@ def main() -> None:
         sex_opts_raw = [x for x in df["info_sex"].unique().tolist() if str(x).strip()]
         _sex_order = {"F": 0, "M": 1}
         sex_opts = sorted(sex_opts_raw, key=lambda x: (_sex_order.get(str(x).strip().upper(), 50), x))
-        sex_pick = st.multiselect("Sex (metadata)", sex_opts)
+        sex_pick = st.multiselect("Sex", sex_opts)
 
         l1_opts = sorted(x for x in df["info_l1_english"].unique().tolist() if x)
-        l1_pick = st.multiselect("L1 = English", l1_opts)
+        l1_pick = st.multiselect("L1 English", l1_opts)
 
         hide_errors = st.checkbox("Hide parse errors", value=True)
 
         speakers = sorted(df["speaker_id"].unique().tolist(), key=lambda x: int(x))
-        speaker_pick = st.multiselect("Speakers (optional)", speakers, format_func=lambda x: str(x))
+        speaker_pick = st.multiselect("Speakers", speakers, format_func=lambda x: str(x))
 
     cfg = {
         "tasks": task_pick,
@@ -548,7 +732,7 @@ def main() -> None:
     f = apply_filters(df, cfg)
 
     tab_about, tab_overview, tab_browse, tab_summary, tab_filler = st.tabs(
-        ["About data", "Overview", "Browse", "By task", "Filler EDA"]
+        ["About", "Overview", "Browse", "Tasks", "Fillers"]
     )
 
     with tab_about:
@@ -556,10 +740,10 @@ def main() -> None:
 
     with tab_overview:
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Rows", f"{len(f):,}")
+        c1.metric("Files", f"{len(f):,}")
         c2.metric("Speakers", f"{f['speaker_id'].nunique()}")
-        c3.metric("Mean words / row", f"{f['_word_count'].mean():.1f}")
-        c4.metric("Mean chars / row", f"{f['_char_count'].mean():.0f}")
+        c3.metric("Mean words", f"{f['_word_count'].mean():.1f}")
+        c4.metric("Mean chars", f"{f['_char_count'].mean():.0f}")
 
         st.markdown("##### Session × task (file counts)")
         ct = (
@@ -586,9 +770,18 @@ def main() -> None:
         else:
             browse = browse.sort_values(["speaker_id", "session", "file_name"])
 
-        show_n = st.slider("Table rows", 5, 80, 15)
+        show_n = st.slider("Show rows", 5, 80, 15)
         display_cols = ["speaker_id", "session", "task", "file_name", "_word_count"]
-        st.dataframe(browse[display_cols].head(show_n), use_container_width=True, hide_index=True)
+        pretty = browse[display_cols].head(show_n).rename(
+            columns={
+                "speaker_id": "Speaker",
+                "session": "Visit",
+                "task": "Task",
+                "file_name": "File",
+                "_word_count": "Words",
+            }
+        )
+        st.dataframe(pretty, use_container_width=True, hide_index=True)
 
         browse = browse.reset_index(drop=True)
         if len(browse):
@@ -602,7 +795,7 @@ def main() -> None:
                 + browse["file_name"].astype(str)
             ).tolist()
             pick_i = st.selectbox(
-                "Inspect transcript",
+                "File",
                 range(len(browse)),
                 format_func=lambda i: labels[i],
             )
@@ -633,14 +826,18 @@ def main() -> None:
                     st.markdown(spec["summary"])
                     st.markdown(f"*On-screen prompt:* {spec['prompt']}")
 
-            st.text_area("Transcript", value=str(row["text"]), height=280, label_visibility="collapsed")
+            st.text_area("Transcript", value=str(row["text"]), height=280)
 
     with tab_summary:
-        st.caption(
-            "**situation** = coarse EDA grouping (read-aloud vs monologue vs …). "
-            "**description** = short summary from the corpus readme."
+        ts = task_summary(f).rename(
+            columns={
+                "n": "files",
+                "mean_words": "mean words",
+                "mean_chars": "mean chars",
+                "typical_session": "usual visit",
+            }
         )
-        st.dataframe(task_summary(f), use_container_width=True, hide_index=True)
+        st.dataframe(ts, use_container_width=True, hide_index=True)
 
     with tab_filler:
         render_filler_tab(f)
