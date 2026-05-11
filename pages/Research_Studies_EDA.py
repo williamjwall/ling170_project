@@ -678,8 +678,17 @@ def render_hybrid_parser_cues_deep_dive() -> None:
     st.markdown("---")
     st.markdown("### Deep dive · Parser cues we use (when spaCy cooperates)")
     st.caption(
-        "Below is the same logic the pilot implements in code—written for **linguistics readers**, not engineers. "
-        "If something here disagrees with a **Token detail** row, trust the table for that sentence: the model wins."
+        """THis is to see the logic behind the classification. It tore me apart for a bit, destroyed my sanity and is LONG.
+        
+        basically... with SpaCey this does POS Tagging (Part-of-Speech) and Dependency Parsing (how words are connected to each other).
+        Functional: 'Like 'as a verb (VB) or 'Well' as an adverb (RB).
+        Filler: These usually get tagged as interjections (UH) or discourse markers.
+        Sentence Starters: "Well," or "So," at the very beginning of a string followed by a comma or pause.
+        Repetitions: "It was so, so, so good" (functional emphasis) vs. "It was, so... we went there" (filler).
+        AND many other cases.
+        
+        A lot of this is also useful to like... to trace my logic"""
+
     )
 
     with st.expander("Read the full walk-through (POS, dependencies, heads, failure modes)", expanded=False):
