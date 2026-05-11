@@ -1,8 +1,8 @@
 """
 POS + dependency disambiguation for ambiguous filler lemmas (like, well, so).
 
-Used by the Research page pilot: compare regex hits vs hybrid-classified counts
-and render before/after HTML highlights. Requires spaCy + en_core_web_sm (or lg).
+Streamlit reads **precomputed** columns from the corpus CSV (see ``scripts/precompute_hybrid_columns.py``).
+spaCy runs **offline** in that script only—not in the app.
 
 this is for will, notes for later debugginggggggggg
 - Tweak rules only in hybrid_classify_token; keep AMBIGUOUS_LEMMAS + regexes in sync if you add lemmas.
@@ -13,6 +13,7 @@ this is for will, notes for later debugginggggggggg
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
@@ -34,6 +35,95 @@ class AmbiguousOccurrence:
     dep: str
     head_lemma: str
     hybrid_is_filler: bool
+
+
+# Columns written by scripts/precompute_hybrid_columns.py and read by Streamlit (no runtime spaCy).
+HYBRID_NUMERIC_COLS: Tuple[str, ...] = (
+    "regex_like",
+    "regex_well",
+    "regex_so",
+    "hybrid_like",
+    "hybrid_well",
+    "hybrid_so",
+    "parsed_like",
+    "parsed_well",
+    "parsed_so",
+    "removed_like",
+    "removed_well",
+    "removed_so",
+    "regex_ambiguous_total",
+    "hybrid_ambiguous_total",
+    "removed_ambiguous_total",
+)
+HYBRID_OCCURRENCES_JSON_COL = "hybrid_occurrences_json"
+
+
+def occurrences_to_json(occurrences: List[AmbiguousOccurrence]) -> str:
+    """One row of CSV: JSON list of token spans for highlights / Token detail."""
+    payload = [
+        {
+            "start": o.start,
+            "end": o.end,
+            "surface": o.surface,
+            "lemma": o.lemma,
+            "pos": o.pos,
+            "dep": o.dep,
+            "head_lemma": o.head_lemma,
+            "hybrid_is_filler": o.hybrid_is_filler,
+        }
+        for o in occurrences
+    ]
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def occurrences_from_json(raw: str) -> List[AmbiguousOccurrence]:
+    if not raw or str(raw).strip() in ("", "nan", "[]"):
+        return []
+    try:
+        data = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return []
+    out: List[AmbiguousOccurrence] = []
+    for d in data:
+        if not isinstance(d, dict):
+            continue
+        try:
+            out.append(
+                AmbiguousOccurrence(
+                    start=int(d["start"]),
+                    end=int(d["end"]),
+                    surface=str(d.get("surface", "")),
+                    lemma=str(d.get("lemma", "")),
+                    pos=str(d.get("pos", "")),
+                    dep=str(d.get("dep", "")),
+                    head_lemma=str(d.get("head_lemma", "")),
+                    hybrid_is_filler=bool(d.get("hybrid_is_filler", False)),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def attach_hybrid_occurrences_column(df: Any) -> Any:
+    """Add ``_hybrid_occurrences`` list column from ``hybrid_occurrences_json`` if present."""
+    import pandas as pd
+
+    out = df.copy()
+    if HYBRID_OCCURRENCES_JSON_COL not in out.columns:
+        out["_hybrid_occurrences"] = [[] for _ in range(len(out))]
+        return out
+    col = out[HYBRID_OCCURRENCES_JSON_COL].astype(str).replace({"nan": ""})
+    out["_hybrid_occurrences"] = [occurrences_from_json(s) for s in col]
+    return out
+
+
+def hybrid_numeric_precomputed(df: Any) -> bool:
+    import pandas as pd
+
+    if not isinstance(df, pd.DataFrame) or len(df) == 0:
+        return False
+    return "hybrid_like" in df.columns and "regex_like" in df.columns
 
 
 def _regex_counts(text: str) -> Tuple[int, int, int]:

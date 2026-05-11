@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import List
 
 import pandas as pd
 import streamlit as st
@@ -19,9 +19,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from hybrid_filler_spacy import (
+    HYBRID_NUMERIC_COLS,
+    HYBRID_OCCURRENCES_JSON_COL,
+    attach_hybrid_occurrences_column,
+    hybrid_numeric_precomputed,
+)
 from streamlit_app import (
     ALL_FILLER_NAMES,
-    DEFAULT_CSV,
+    CORPUS_CSV,
     attach_filler_columns,
     load_corpus,
     render_filler_emotion_by_task,
@@ -31,24 +37,6 @@ from streamlit_app import (
 )
 
 RESEARCH_EXPORTS = REPO_ROOT / "ucla_box_parsed" / "research_exports"
-
-HYBRID_NUMERIC_COLS = (
-    "regex_like",
-    "regex_well",
-    "regex_so",
-    "hybrid_like",
-    "hybrid_well",
-    "hybrid_so",
-    "parsed_like",
-    "parsed_well",
-    "parsed_so",
-    "removed_like",
-    "removed_well",
-    "removed_so",
-    "regex_ambiguous_total",
-    "hybrid_ambiguous_total",
-    "removed_ambiguous_total",
-)
 
 
 def _ensure_research_exports_dir() -> Path:
@@ -87,10 +75,8 @@ def _filler_per_file_export_columns(df: pd.DataFrame) -> List[str]:
 
 
 # this is for will, notes for later debugginggggggggg
-# - Hybrid pilot: Research_Studies_EDA.render_hybrid_pilot_full_page + _cached_hybrid_analyses
+# - Hybrid pilot reads HYBRID_* columns from CSV (scripts/precompute_hybrid_columns.py); no spaCy in Streamlit
 # - Rules live in hybrid_filler_spacy.hybrid_classify_token / analyze_transcript
-# - cache_data key is (tuple(texts), model_name); change either to force re-parse
-# - cache_resource loads nlp once per process per model_name
 
 
 def _hybrid_per_file_export_columns(df: pd.DataFrame) -> List[str]:
@@ -111,34 +97,88 @@ def _hybrid_per_file_export_columns(df: pd.DataFrame) -> List[str]:
     ]
     nums = [c for c in HYBRID_NUMERIC_COLS if c in df.columns]
     tail = [c for c in ("_word_count", "_filler_total", "_filler_per100", "_filler_total_after_hybrid") if c in df.columns]
-    return meta + nums + tail
+    json_col = [HYBRID_OCCURRENCES_JSON_COL] if HYBRID_OCCURRENCES_JSON_COL in df.columns else []
+    return meta + nums + tail + json_col
 
-
-@st.cache_resource(show_spinner="Loading spaCy model…")
-def _research_spacy_nlp(model_name: str) -> Any:
-    # this is for will, notes for later debugginggggggggg: OSError here → UI catch; wrong model name → install wheel
-    import spacy
-
-    return spacy.load(model_name)
-
-
-@st.cache_data(show_spinner="Hybrid POS/dep (like · well · so)…")
-def _cached_hybrid_analyses(texts: Tuple[str, ...], model_name: str) -> Tuple[Dict[str, Any], ...]:
-    from hybrid_filler_spacy import analyze_transcript
-
-    nlp = _research_spacy_nlp(model_name)
-    # this is for will, notes for later debugginggggggggg: len(texts) large → long first run; tuple(texts) must be stable order
-    return tuple(analyze_transcript(t, nlp) for t in texts)
 
 AGE_MIN = 18
 AGE_MAX = 24
 EMO_TASKS = ("happy", "annoyed", "neutral")
 
 
+def render_research_pooled_mean_explainer(*, for_hybrid_tab: bool = False, widget_key: str = "rates") -> None:
+    """
+    Plain-language definitions used on every Research tab.
+
+    *Pooled /100 w* and *mean per file* both use hits ÷ words × 100; they differ in how transcripts are combined.
+    """
+    with st.expander(
+        "What are **Pooled /100 w** and **Mean / file**? (click to read)",
+        expanded=False,
+        key=f"research_rate_help_{widget_key}",
+    ):
+        st.markdown(
+            """
+We count **filler hits** with simple word patterns (*um*, *like*, …) and each transcript has a **word count**.
+To compare tasks or sexes, we need a **rate** so short clips are not unfairly compared to long ones.
+
+Both numbers below use the same formula **hits ÷ words × 100** (“about how many hits per 100 words?”).
+They differ in **when** we add hits and words together.
+
+---
+
+##### Mean per file (also “mean rate / file”, “Mean / file”)
+
+1. **Inside one transcript:** filler hits ÷ that file’s own word count × 100. Call that the file’s **density**.
+2. **Across the group:** take the **average** of those densities (every transcript counts **once**).
+
+**Plain English:** “If I pick a random transcript from this slice, what density should I *expect* on average?”
+
+**Why we use it:** nobody’s recording dominates just because they talked longer. Good when you care about a
+**typical speaker / typical file**.
+
+---
+
+##### Pooled /100 w (“pooled matches / 100 words”, sometimes “/100 w” in a table)
+
+1. **Add** all filler hits in the slice (e.g. all *happy* files you kept).
+2. **Add** all words in that same slice.
+3. Compute **total hits ÷ total words × 100** once.
+
+**Plain English:** “If I glued every kept transcript into **one long wall of text**, how dense would fillers be?”
+
+**Why we use it:** it matches how people think about **“how much filler is in this pile of speech overall?”**
+Longer files contribute **more words**, so they influence this number **more**.
+
+---
+
+##### Why keep both?
+
+They answer **slightly different questions**. If some people talk much longer than others, **pooled** tilts toward
+those long talkers; **mean per file** does not. Showing both (or being explicit which one a chart uses) avoids
+mix-ups when you compare female vs male, or happy vs neutral.
+
+On this page, **deeper insight** tables that compare patterns across tasks or sexes mostly use **pooled /100 w**
+so every word in the filtered slice counts toward the rate.
+
+---
+            """.strip()
+        )
+        if for_hybrid_tab:
+            st.markdown(
+                """
+**About this Hybrid tab:** the big **before / after** bar chart is mostly **raw hit counts** in the transcripts
+you selected (totals for *like*, *well*, *so*), not pooled or mean-per-file rates. The same *hits ÷ words* ideas
+still apply when you read **whole-corpus filler totals** or export **per-file** columns such as `_filler_per100`.
+                """.strip()
+            )
+
+
 def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
     """Defined here so the page does not depend on wrapper exports in streamlit_app."""
-    st.markdown("### Fillers · emotion comparison")
+    st.markdown("### Emotion tasks · fillers")
     st.caption("Neutral, happy, and annoyed tasks only; same filler patterns as the main app.")
+    render_research_pooled_mean_explainer(widget_key=f"{widget_key_prefix}emotion")
     use_all_lengths = st.checkbox(
         "Include every transcript length (set min words to 0)",
         value=False,
@@ -163,34 +203,24 @@ def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: 
         fw = attach_filler_columns(work)
 
     use_hybrid = st.checkbox(
-        "Use spaCy-adjusted counts for *like* / *well* / *so* (runs parser on **all** files above)",
+        "Use hybrid counts for *like* / *well* / *so* (from CSV columns; see precompute script)",
         value=False,
         key=f"{widget_key_prefix}use_hybrid_fillers",
-        help="Other patterns stay regex-only. First run parses every transcript in this tab’s slice; use the Hybrid tab for highlights.",
+        help="Requires hybrid_* columns on the loaded CSV. Run: python scripts/precompute_hybrid_columns.py",
     )
-    hybrid_model = "en_core_web_sm"
-    if use_hybrid:
-        hybrid_model = st.selectbox(
-            "spaCy pipeline",
-            ("en_core_web_sm", "en_core_web_md", "en_core_web_lg"),
-            index=0,
-            key=f"{widget_key_prefix}hybrid_model_fillers",
-        )
     fw_display = fw
     if use_hybrid:
-        try:
-            with st.spinner("spaCy: adjusting like / well / so on every transcript…"):
-                fw_display = apply_hybrid_metrics_to_filler_frame(fw, hybrid_model)
+        if hybrid_numeric_precomputed(fw):
+            fw_display = apply_hybrid_metrics_to_filler_frame(fw)
             st.caption(
-                "**Data source:** spaCy hybrid for *like*, *well*, and *so*; **regex** for every other pattern. "
+                "**Data source:** precomputed hybrid for *like*, *well*, and *so*; **regex** for every other pattern. "
                 "**Totals** subtract only the three-word overcount on each file."
             )
-        except OSError as e:
-            st.error(
-                f"Could not load `{hybrid_model}` ({e}). Install spaCy + model (see Hybrid pilot → Setup), "
-                "or run `bash scripts/install_spacy_pep668.sh`."
+        else:
+            st.warning(
+                "Hybrid columns not found on this CSV. Run locally: "
+                "`python scripts/precompute_hybrid_columns.py` so `ucla_text_state_parsed_with_hybrid.csv` exists at the fixed corpus path."
             )
-            fw_display = fw
 
     total_words = int(fw_display["_word_count"].sum())
     m1, m2 = st.columns(2)
@@ -203,7 +233,7 @@ def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: 
         st.caption(
             f"Saves **one new timestamped CSV** under `{RESEARCH_EXPORTS.relative_to(REPO_ROOT)}` "
             "(older exports are kept). Omits full transcript text to keep files small. "
-            "Reflects **spaCy-adjusted** columns if that option is turned on."
+            "Reflects **hybrid-adjusted** counts for those three words if the checkbox is on."
         )
         if st.button("Save per-file filler counts (CSV)", key=f"{widget_key_prefix}export_emotion"):
             cols = _filler_per_file_export_columns(fw_display)
@@ -213,8 +243,9 @@ def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: 
 
 def render_filler_tab_phone_sex_only(f_base: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
     """Defined here so the page does not depend on wrapper exports in streamlit_app."""
-    st.markdown("### Fillers · phone transcripts")
+    st.markdown("### Phone transcripts · fillers")
     st.caption("Female vs male on phonecall transcripts; same filler patterns as the main app.")
+    render_research_pooled_mean_explainer(widget_key=f"{widget_key_prefix}phone")
     use_all_lengths = st.checkbox(
         "Include every transcript length (min words = 0)",
         value=False,
@@ -239,33 +270,23 @@ def render_filler_tab_phone_sex_only(f_base: pd.DataFrame, *, widget_key_prefix:
         fw = attach_filler_columns(work)
 
     use_hybrid = st.checkbox(
-        "Use spaCy-adjusted counts for *like* / *well* / *so* (runs parser on **all** files above)",
+        "Use hybrid counts for *like* / *well* / *so* (from CSV columns; see precompute script)",
         value=False,
         key=f"{widget_key_prefix}use_hybrid_fillers",
-        help="Other patterns stay regex-only. Parses every phone transcript in this slice.",
+        help="Requires hybrid_* columns on the loaded CSV. Run: python scripts/precompute_hybrid_columns.py",
     )
-    hybrid_model = "en_core_web_sm"
-    if use_hybrid:
-        hybrid_model = st.selectbox(
-            "spaCy pipeline",
-            ("en_core_web_sm", "en_core_web_md", "en_core_web_lg"),
-            index=0,
-            key=f"{widget_key_prefix}hybrid_model_fillers",
-        )
     fw_display = fw
     if use_hybrid:
-        try:
-            with st.spinner("spaCy: adjusting like / well / so on every transcript…"):
-                fw_display = apply_hybrid_metrics_to_filler_frame(fw, hybrid_model)
+        if hybrid_numeric_precomputed(fw):
+            fw_display = apply_hybrid_metrics_to_filler_frame(fw)
             st.caption(
-                "**Data source:** spaCy hybrid for *like*, *well*, *so*; **regex** for all other patterns."
+                "**Data source:** precomputed hybrid for *like*, *well*, *so*; **regex** for all other patterns."
             )
-        except OSError as e:
-            st.error(
-                f"Could not load `{hybrid_model}` ({e}). Install spaCy + model (Hybrid pilot → Setup), "
-                "or run `bash scripts/install_spacy_pep668.sh`."
+        else:
+            st.warning(
+                "Hybrid columns not found on this CSV. Run locally: "
+                "`python scripts/precompute_hybrid_columns.py` so `ucla_text_state_parsed_with_hybrid.csv` exists at the fixed corpus path."
             )
-            fw_display = fw
 
     total_words = int(fw_display["_word_count"].sum())
     total_hits = int(fw_display["_filler_total"].sum())
@@ -280,7 +301,7 @@ def render_filler_tab_phone_sex_only(f_base: pd.DataFrame, *, widget_key_prefix:
         st.caption(
             f"Saves **one new timestamped CSV** under `{RESEARCH_EXPORTS.relative_to(REPO_ROOT)}` "
             "(older exports are kept). Omits full transcript text. "
-            "Reflects **spaCy-adjusted** columns if that option is on."
+            "Reflects **hybrid-adjusted** counts for those three words if the checkbox is on."
         )
         if st.button("Save per-file filler counts (CSV)", key=f"{widget_key_prefix}export_phone"):
             cols = _filler_per_file_export_columns(fw_display)
@@ -301,15 +322,15 @@ def apply_common_filters(df: pd.DataFrame, hide_errors: bool) -> pd.DataFrame:
     return out
 
 
-def sidebar_csv() -> Tuple[Path, bool]:
-    st.sidebar.markdown("### Data source")
-    csv_path = st.sidebar.text_input("CSV path", value=str(DEFAULT_CSV))
-    path = Path(csv_path).expanduser()
-    if not path.is_file():
-        st.sidebar.error("CSV not found.")
+def research_sidebar() -> bool:
+    st.sidebar.markdown("### Corpus")
+    st.sidebar.caption(str(CORPUS_CSV.resolve()))
+    if not CORPUS_CSV.is_file():
+        st.sidebar.error(
+            f"Not found: `{CORPUS_CSV}`. Run `python scripts/precompute_hybrid_columns.py` from the repo root."
+        )
         st.stop()
-    hide_errors = st.sidebar.checkbox("Hide parse-error rows", value=True)
-    return path, hide_errors
+    return st.sidebar.checkbox("Hide rows with parse errors", value=True)
 
 
 def cohort_header(work: pd.DataFrame) -> None:
@@ -355,8 +376,8 @@ def render_hybrid_intro_and_flow() -> None:
     )
     st.caption(
         "Worked examples, Universal Dependencies–style tag glosses, removal logic, and programmer notes → "
-        "**Appendix** (collapsed by default). On **Emotion** and **Phone** tabs you can turn on the same spaCy "
-        "adjustment for *like* / *well* / *so* on the whole cohort there."
+        "**Appendix** (collapsed by default). On **Emotion** and **Phone** tabs you can turn on the same **precomputed** "
+        "hybrid adjustment for *like* / *well* / *so* when your CSV includes those columns."
     )
 
     with st.expander("Appendix: examples, parser tags (UD-style), and implementation", expanded=False):
@@ -412,13 +433,11 @@ Automatic tags **mis-fire** on fragments and fast speech. Use the per-line **Tok
 - **Rule source:** `hybrid_filler_spacy.py`, function `hybrid_classify_token` (returns keep vs structural); per-file aggregation in `analyze_transcript`.
 - **Alignment:** Regex counts are on the raw string; hybrid counts walk spaCy `Token` objects whose surface form is one of the three lemmas (light punctuation strip on the token text).
 - **Highlights:** Character spans come from `token.idx` on the same string passed into the parser; HTML escaping happens only at render time.
-- **Caching (Streamlit):** one loaded pipeline per model name (`@st.cache_resource`); parsed results memoized on the tuple of transcript texts plus model name (`@st.cache_data`). Clear Streamlit cache after editing rules, or nudge inputs, if numbers look stale.
+- **Offline batch:** run ``scripts/precompute_hybrid_columns.py`` after changing rules; replace or swap the CSV the app loads.
 
 #### this is for will, notes for later debugginggggggggg
 
-- `_cached_hybrid_analyses` — `st.cache_data`; `texts` must stay a **tuple** for hashing. Stale after code edits → **Clear cache** or change the slice.
-- `_research_spacy_nlp` — first successful load per `model_name` sticks for the process; restart after installing a new model.
-- `HYBRID_NUMERIC_COLS` — new numeric keys from `analyze_transcript` must be added here or `_merge_hybrid_into_work` drops them.
+- `HYBRID_NUMERIC_COLS` — defined once in ``hybrid_filler_spacy``; precompute script and ``load_corpus`` must stay aligned.
 - `_filler_total_after_hybrid` — only subtracts the like/well/so adjustment row; full regex filler totals still come from `attach_filler_columns` / `streamlit_app._count_fillers_one`.
 - **Token detail empty but regex > 0** — tokenizer may not have surfaced a standalone token; compare `parsed_*` vs `regex_*` on that row.
 - **Discourse *like*** — often `PART` / `SCONJ` / `INTJ`; many non-prep/verb paths still **count** in hybrid unless you tighten `hybrid_classify_token`.
@@ -426,31 +445,17 @@ Automatic tags **mis-fire** on fragments and fast speech. Use the per-line **Tok
         )
 
 
-def _merge_hybrid_into_work(work: pd.DataFrame, analyses: Tuple[Dict[str, Any], ...]) -> pd.DataFrame:
-    # this is for will, notes for later debugginggggggggg: analyses order must match work rows after reset_index
-    out = work.reset_index(drop=True).copy()
-    for c in HYBRID_NUMERIC_COLS:
-        out[c] = 0
-    occ_lists: list = []
-    for i, d in enumerate(analyses):
-        occ_lists.append(d.get("occurrences", []))
-        for c in HYBRID_NUMERIC_COLS:
-            out.at[i, c] = int(d.get(c, 0))
-    out["_hybrid_occurrences"] = occ_lists
-    return out
-
-
-def apply_hybrid_metrics_to_filler_frame(fw: pd.DataFrame, model_name: str) -> pd.DataFrame:
+def apply_hybrid_metrics_to_filler_frame(fw: pd.DataFrame) -> pd.DataFrame:
     """
-    Recompute per-file filler columns using spaCy for *like* / *well* / *so* only.
+    Adjust per-file filler columns using **precomputed** hybrid counts from the CSV.
 
-    Replaces ``_f_like``, ``_f_well``, ``_f_so`` with hybrid counts, subtracts
+    Replaces ``_f_like``, ``_f_well``, ``_f_so`` with ``hybrid_*``, subtracts
     ``removed_ambiguous_total`` from ``_filler_total``, and refreshes ``_filler_per100``.
-    All other patterns stay regex-based. Runs on **every row** of ``fw`` (full cohort for that tab).
+    If hybrid columns are missing, returns ``fw`` unchanged.
     """
-    fw2 = fw.reset_index(drop=True).copy()
-    analyses = _cached_hybrid_analyses(tuple(fw2["text"].astype(str)), model_name)
-    out = _merge_hybrid_into_work(fw2, analyses)
+    if not hybrid_numeric_precomputed(fw):
+        return fw
+    out = fw.reset_index(drop=True).copy()
     for n in ("like", "well", "so"):
         out[f"_f_{n}"] = out[f"hybrid_{n}"]
     out["_filler_total"] = (out["_filler_total"] - out["removed_ambiguous_total"]).clip(lower=0)
@@ -465,36 +470,19 @@ def render_hybrid_pilot_full_page(df_age: pd.DataFrame) -> None:
 
     st.markdown("### Hybrid pilot")
     render_hybrid_intro_and_flow()
+    render_research_pooled_mean_explainer(for_hybrid_tab=True, widget_key="hybrid")
 
-    with st.expander("Setup: spaCy + English model (click if install failed)", expanded=False):
+    with st.expander("Regenerating hybrid columns (offline only)", expanded=False):
         st.markdown(
-            "Use **`python3`** on Debian/WSL. Easiest: `sudo apt install python3.12-venv` → `python3 -m venv .venv` → "
-            "`.venv/bin/pip install -r requirements.txt` → `.venv/bin/python -m spacy download en_core_web_sm`. "
-            "Or run `bash scripts/install_spacy_pep668.sh` from the repo root (PEP 668 workaround)."
+            "The app loads only **`ucla_text_state_parsed_with_hybrid.csv`** (under `ucla_box_parsed/`). Hybrid counts and highlights live in "
+            "extra columns, produced **once** on your machine (Streamlit does not run the parser):\n\n"
+            "```bash\npip install 'spacy>=3.7,<4'\npython -m spacy download en_core_web_sm\n"
+            "python scripts/precompute_hybrid_columns.py --input ucla_box_parsed/ucla_text_state_parsed.csv \\\n"
+            "    --output ucla_box_parsed/ucla_text_state_parsed_with_hybrid.csv\n```\n\n"
+            "Keep a copy of the base `ucla_text_state_parsed.csv` if you overwrite the hybrid file."
         )
 
-    st.markdown("#### Choose a slice, then run the parser")
-    parse_all_files = st.checkbox(
-        "Parse **every** file matching filters (ignore max-files cap; can be slow)",
-        value=False,
-        key="hybrid_parse_all",
-        help="Unchecked: only the first N files (slider), longest transcripts first. Checked: all rows after task + min-words filters.",
-    )
-    model_name = st.selectbox(
-        "spaCy pipeline",
-        ("en_core_web_sm", "en_core_web_md", "en_core_web_lg"),
-        index=0,
-        key="hybrid_model",
-    )
-    max_files = st.slider(
-        "Max transcript files to parse (when not parsing all)",
-        10,
-        400,
-        120,
-        10,
-        key="hybrid_max",
-        disabled=parse_all_files,
-    )
+    st.markdown("#### Choose a slice (all matching transcripts, longest first)")
     min_words = st.number_input(
         "Min words per file",
         0,
@@ -514,32 +502,42 @@ def render_hybrid_pilot_full_page(df_age: pd.DataFrame) -> None:
     if tasks_pick:
         work = work[work["task"].isin(tasks_pick)]
     work = work.sort_values("_word_count", ascending=False)
-    if not parse_all_files:
-        work = work.head(int(max_files))
     if len(work) == 0:
         st.warning("No rows match filters.")
         return
 
-    try:
-        analyses = _cached_hybrid_analyses(tuple(work["text"].astype(str)), model_name)
-    except OSError as e:
-        st.error(
-            f"Could not load spaCy model `{model_name}` ({e}). "
-            "Install spaCy with python3 (see the Setup expander above), then install the matching model wheel from "
-            "https://github.com/explosion/spacy-models/releases — or run `bash scripts/install_spacy_pep668.sh` from the repo root."
-        )
-        return
-
-    merged = _merge_hybrid_into_work(work, analyses)
+    work = attach_hybrid_occurrences_column(work.reset_index(drop=True))
     with st.spinner("Regex filler totals (all patterns)…"):
-        merged_fw = attach_filler_columns(merged)
-    merged_fw["_filler_total_after_hybrid"] = (
-        merged_fw["_filler_total"] - merged_fw["removed_ambiguous_total"]
-    ).clip(lower=0)
+        merged_fw = attach_filler_columns(work)
 
-    rsum = int(merged_fw["regex_ambiguous_total"].sum())
-    hsum = int(merged_fw["hybrid_ambiguous_total"].sum())
-    rem = int(merged_fw["removed_ambiguous_total"].sum())
+    has_hybrid = hybrid_numeric_precomputed(work)
+    if has_hybrid:
+        for c in HYBRID_NUMERIC_COLS:
+            merged_fw[c] = work[c].astype(int).values
+        merged_fw["_hybrid_occurrences"] = list(work["_hybrid_occurrences"])
+        merged_fw["_filler_total_after_hybrid"] = (
+            merged_fw["_filler_total"] - merged_fw["removed_ambiguous_total"]
+        ).clip(lower=0)
+    else:
+        for c in HYBRID_NUMERIC_COLS:
+            merged_fw[c] = 0
+        merged_fw["_filler_total_after_hybrid"] = merged_fw["_filler_total"]
+        st.info(
+            "This CSV has no hybrid columns yet. After you run `scripts/precompute_hybrid_columns.py` and reload "
+            "that file here, **before/after** counts and highlights will appear. Below, “after” matches “before” for now."
+        )
+
+    if has_hybrid:
+        rsum = int(merged_fw["regex_ambiguous_total"].sum())
+        hsum = int(merged_fw["hybrid_ambiguous_total"].sum())
+        rem = int(merged_fw["removed_ambiguous_total"].sum())
+    else:
+        rl0 = int(merged_fw["_f_like"].sum())
+        rw0 = int(merged_fw["_f_well"].sum())
+        rs0 = int(merged_fw["_f_so"].sum())
+        rsum = rl0 + rw0 + rs0
+        hsum = rsum
+        rem = 0
     pct = 100.0 * rem / rsum if rsum else 0.0
     tot_r = int(merged_fw["_filler_total"].sum())
     tot_h = int(merged_fw["_filler_total_after_hybrid"].sum())
@@ -553,16 +551,18 @@ def render_hybrid_pilot_full_page(df_age: pd.DataFrame) -> None:
         "everything except *like* / *well* / *so* is unchanged."
     )
 
-    rl, rw, rs = (
-        int(merged_fw["regex_like"].sum()),
-        int(merged_fw["regex_well"].sum()),
-        int(merged_fw["regex_so"].sum()),
-    )
-    hl, hw, hs = (
-        int(merged_fw["hybrid_like"].sum()),
-        int(merged_fw["hybrid_well"].sum()),
-        int(merged_fw["hybrid_so"].sum()),
-    )
+    if has_hybrid:
+        rl = int(merged_fw["regex_like"].sum())
+        rw = int(merged_fw["regex_well"].sum())
+        rs = int(merged_fw["regex_so"].sum())
+        hl = int(merged_fw["hybrid_like"].sum())
+        hw = int(merged_fw["hybrid_well"].sum())
+        hs = int(merged_fw["hybrid_so"].sum())
+    else:
+        rl = int(merged_fw["_f_like"].sum())
+        rw = int(merged_fw["_f_well"].sum())
+        rs = int(merged_fw["_f_so"].sum())
+        hl, hw, hs = rl, rw, rs
     chart_df = pd.DataFrame(
         {
             "Before (regex)": [rl, rw, rs, rsum],
@@ -809,12 +809,14 @@ in `hybrid_filler_spacy.py` if you want to change the policy later.
 
 def main() -> None:
     st.title("Research · fillers")
-    st.caption(f"Ages **{AGE_MIN}–{AGE_MAX}** · orthographic tier only.")
+    st.caption(
+        f"Ages **{AGE_MIN}–{AGE_MAX}** · orthographic transcripts only · corpus: `{CORPUS_CSV.name}` (fixed path)."
+    )
 
-    path, hide_errors = sidebar_csv()
+    hide_errors = research_sidebar()
 
     try:
-        df_raw = load_corpus(str(path))
+        df_raw = load_corpus(str(CORPUS_CSV))
     except Exception as e:
         st.exception(e)
         st.stop()
@@ -822,11 +824,11 @@ def main() -> None:
     df_base = apply_common_filters(df_raw, hide_errors)
 
     study = st.radio(
-        "View",
+        "Section",
         [
-            "Emotion tasks (neutral · happy · annoyed)",
-            "Phone transcripts (female · male)",
-            "Hybrid pilot (POS + dep)",
+            "Emotion tasks (neutral, happy, annoyed)",
+            "Phone (female vs male)",
+            "Hybrid pilot (like, well, so)",
         ],
         horizontal=True,
     )

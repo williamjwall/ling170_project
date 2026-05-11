@@ -15,7 +15,10 @@ import pandas as pd
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_CSV = REPO_ROOT / "ucla_box_parsed" / "ucla_text_state_parsed.csv"
+# Fixed corpus path (orthographic rows + hybrid columns). Regenerate offline only.
+CORPUS_CSV = REPO_ROOT / "ucla_box_parsed" / "ucla_text_state_parsed_with_hybrid.csv"
+# Back-compat name for scripts / pages that import DEFAULT_CSV.
+DEFAULT_CSV = CORPUS_CSV
 
 # Eligibility + design session (from readme_data.txt). "Typical" — redos may use session D.
 TASK_SPECS: Dict[str, Dict[str, str]] = {
@@ -179,9 +182,9 @@ def render_filler_insights_emotion(
 
     with st.expander("Deeper insights · emotion ↔ fillers", expanded=True):
         st.caption(
-            "**Pooled /100 w** = pattern hits ÷ words in that task × 100. "
-            "**Mix %** = that pattern’s share of *all pattern hits summed* in that task (same bookkeeping as totals). "
-            "*like/well/so* also match grammatical uses."
+            "Here **/100 w** values are **pooled** (all hits ÷ all words in that task × 100), not mean-per-file. "
+            "**Mix %** = that pattern’s share of *all pattern hits summed* in that task. "
+            "*like/well/so* also match grammatical uses unless hybrid counts are on in Research."
         )
 
         st.markdown("##### Filler families by emotion")
@@ -391,6 +394,12 @@ def load_corpus(csv_path: str) -> pd.DataFrame:
     for col in df.columns:
         df[col] = df[col].astype(str).replace({"nan": ""})
     df = _normalize_metadata_columns(df)
+    # Optional offline spaCy columns (scripts/precompute_hybrid_columns.py) — coerce to int for math in the app.
+    from hybrid_filler_spacy import HYBRID_NUMERIC_COLS
+
+    for col in HYBRID_NUMERIC_COLS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
     # App scope: orthographic transcript tier only (human-readable words; not ARPAbet alignment tiers).
     df = df[df["textgrid_role"] == "orthographic"].copy()
     df["_word_count"] = df["text"].apply(
@@ -476,8 +485,10 @@ def render_about_tab() -> None:
     st.markdown("### Dataset")
     st.markdown(
         "**UCLA Speaker Variability** — ~202 speakers, visits **A–C** (sometimes **D**), multiple tasks per visit "
-        "(reading, monologue, phone, video, etc.). **Fillers** tab: word-level counts in orthographic transcripts. "
-        "CSV from `parse_ucla_box_text_state.py` + optional `public_database_speaker_info.xlsx`."
+        "(reading, monologue, phone, video, etc.). The app loads **orthographic** transcript rows only and, by default, "
+        "**`ucla_text_state_parsed_with_hybrid.csv`** (regex + offline parser columns for *like* / *well* / *so*). "
+        "Rebuild it with `scripts/precompute_hybrid_columns.py` after changing parser rules (path is fixed in the app). "
+        "Base export: `parse_ucla_box_text_state.py` + optional `public_database_speaker_info.xlsx`."
     )
 
     st.markdown("### Column reference (CSV)")
@@ -670,8 +681,8 @@ def render_filler_emotion_by_task(fw: pd.DataFrame, *, emotion_order: Tuple[str,
     """Compare fillers across emotion elicitation tasks (subset of corpus tasks)."""
     st.subheader("By emotion task")
     st.caption(
-        "**Mean / file** = mean of each transcript’s filler hits ÷ word count × 100. "
-        "**Pooled /100 w** = all hits in that task ÷ all words × 100. "
+        "**Mean / file** = average of each transcript’s own (hits ÷ words × 100); **Pooled /100 w** = all hits in that task ÷ all words × 100. "
+        "See the Research page expander *What are Pooled /100 w and Mean / file?* for a full explanation. "
         "Tasks are ordered neutral → happy → annoyed when present."
     )
     rows: List[Dict[str, object]] = []
@@ -740,18 +751,25 @@ def render_filler_female_male(fw: pd.DataFrame, *, compact_caption: bool = False
         st.warning("No rows with sex coded **F** or **M** under current filters.")
         return
 
+    skip_note = (
+        f" Not shown: **{n_excl:,}** transcript(s) with no **F** or **M** sex code (we only compare those two)."
+        if n_excl
+        else ""
+    )
     if compact_caption:
         st.caption(
-            f"Pooled /100 w = total hits ÷ total words in that sex; mean / file = average per transcript. "
-            f"Excluded {n_excl:,} file(s) without F/M code."
+            "**Pooled /100 w:** Imagine one long transcript per sex: add all filler hits, add all words, then "
+            "hits ÷ words × 100. **Mean / file:** For each transcript, hits ÷ its own words × 100, then average "
+            "those numbers (short and long files each count once)."
+            + skip_note
         )
     else:
         st.subheader("Female vs male")
         st.caption(
-            "**Filler matches** = sum of regex hits on the orthographic tier (same patterns as below). "
-            "**Pooled /100 w** = total hits ÷ total word tokens × 100 within each sex. "
-            "**Mean / file** = average of each file’s hits÷words×100 (one vote per transcript). "
-            f"Excluded here: **{n_excl:,}** file(s) with missing or non–F/M sex codes."
+            "**Filler matches** = sum of hits from the same patterns as elsewhere on this tab. "
+            "**Pooled /100 w:** all hits for that sex ÷ all words for that sex × 100 (weights longer transcripts more). "
+            "**Mean / file:** each transcript’s hits ÷ words × 100, then averaged (weights each file equally)."
+            + skip_note
         )
 
     rows = []
@@ -805,7 +823,6 @@ def render_filler_female_male(fw: pd.DataFrame, *, compact_caption: bool = False
 
 
 def render_filler_tab(f_base: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
-    st.markdown("### Fillers")
     with st.expander("What the numbers mean", expanded=False):
         st.markdown(
             """
@@ -868,7 +885,7 @@ So it is **matches per 100 words** for that recording.
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Files", f"{len(fw):,}")
     m2.metric("Words", f"{total_words:,}")
-    m3.metric("Matches", f"{total_hits:,}")
+    m3.metric("Filler matches", f"{total_hits:,}")
     m4.metric("Mean rate (per file)", f"{mean_file_rate:.2f}")
 
     render_filler_female_male(fw)
@@ -1041,14 +1058,20 @@ def main() -> None:
     )
 
     st.title("UCLA Speaker Variability")
-    st.markdown('<p class="muted">Transcripts · filler-word counts</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="muted">Orthographic transcripts · filler patterns · fixed hybrid corpus</p>',
+        unsafe_allow_html=True,
+    )
 
     with st.sidebar:
-        st.markdown("### CSV")
-        csv_path = st.text_input("CSV path", value=str(DEFAULT_CSV), label_visibility="collapsed")
-        path = Path(csv_path).expanduser()
+        st.markdown("### Corpus")
+        path = CORPUS_CSV
+        st.caption(str(path.resolve()))
         if not path.is_file():
-            st.error("File not found.")
+            st.error(
+                f"Corpus not found at `{path}`. From the repo root run: "
+                "`python scripts/precompute_hybrid_columns.py`"
+            )
             st.stop()
 
         try:
@@ -1057,7 +1080,7 @@ def main() -> None:
             st.exception(e)
             st.stop()
 
-        st.caption(f"{len(df):,} rows · {df['speaker_id'].nunique()} speakers")
+        st.caption(f"{len(df):,} orthographic transcripts · {df['speaker_id'].nunique():,} speakers")
 
         st.markdown("---")
         st.markdown("### Filter")
@@ -1075,9 +1098,9 @@ def main() -> None:
         sex_pick = st.multiselect("Sex", sex_opts)
 
         l1_opts = sorted(x for x in df["info_l1_english"].unique().tolist() if x)
-        l1_pick = st.multiselect("L1 English", l1_opts)
+        l1_pick = st.multiselect("English as L1", l1_opts, help="Values from `info_l1_english` in the spreadsheet (e.g. Y/N).")
 
-        hide_errors = st.checkbox("Hide parse errors", value=True)
+        hide_errors = st.checkbox("Hide rows with parse errors", value=True)
 
         speakers = sorted(df["speaker_id"].unique().tolist(), key=lambda x: int(x))
         speaker_pick = st.multiselect("Speakers", speakers, format_func=lambda x: str(x))
@@ -1095,7 +1118,7 @@ def main() -> None:
     f = apply_filters(df, cfg)
 
     tab_about, tab_overview, tab_browse, tab_summary, tab_filler = st.tabs(
-        ["About", "Overview", "Browse", "Tasks", "Fillers"]
+        ["About", "Overview", "Browse", "Task stats", "Fillers"]
     )
 
     with tab_about:
@@ -1121,14 +1144,14 @@ def main() -> None:
 
     with tab_browse:
         sort_by = st.radio(
-            "Sort",
-            ["speaker · file", "words ↓", "words ↑"],
+            "Sort files by",
+            ["Speaker · visit · file", "Words (most first)", "Words (fewest first)"],
             horizontal=True,
         )
         browse = f.copy()
-        if sort_by == "words ↓":
+        if sort_by == "Words (most first)":
             browse = browse.sort_values("_word_count", ascending=False)
-        elif sort_by == "words ↑":
+        elif sort_by == "Words (fewest first)":
             browse = browse.sort_values("_word_count", ascending=True)
         else:
             browse = browse.sort_values(["speaker_id", "session", "file_name"])
@@ -1158,7 +1181,7 @@ def main() -> None:
                 + browse["file_name"].astype(str)
             ).tolist()
             pick_i = st.selectbox(
-                "File",
+                "Transcript",
                 range(len(browse)),
                 format_func=lambda i: labels[i],
             )
