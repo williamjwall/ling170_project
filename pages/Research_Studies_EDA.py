@@ -687,7 +687,7 @@ def render_hybrid_parser_cues_deep_dive() -> None:
         Repetitions: "It was so, so, so good" (functional emphasis) vs. "It was, so... we went there" (filler).
         AND many other cases.
         
-        A lot of this is also useful to like... to trace my logic"""
+        A lot of this is also useful to like... uummmmmm... uhhhhhhhhh... trace my logic."""
 
     )
 
