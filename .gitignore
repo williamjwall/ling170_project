@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Timestamped research tab exports (regenerate anytime)
+ucla_box_parsed/research_exports/

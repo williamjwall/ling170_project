@@ -147,6 +147,218 @@ TOKEN_PATTERNS: List[Tuple[str, str]] = [
 ]
 ALL_FILLER_NAMES = [n for n, _ in PHRASE_PATTERNS + TOKEN_PATTERNS]
 
+# Coarser buckets for EDA summaries (research page & insights).
+FILLER_GROUPS: List[Tuple[str, List[str]]] = [
+    ("Hesitation (um, uh, …)", ["um", "uh", "uhm", "erm", "er", "hmm"]),
+    ("Phrases (you know, I mean, …)", ["you know", "i mean", "sort of", "kind of"]),
+    ("Like · well · so · actually…", ["like", "well", "so", "actually", "basically", "literally"]),
+]
+
+
+def _pooled_pat_per100(df: pd.DataFrame, patterns: List[str]) -> float:
+    """Combined rate for named patterns per 100 words in slice df."""
+    words = int(df["_word_count"].sum())
+    if words <= 0:
+        return 0.0
+    hits = sum(int(df[f"_f_{p}"].sum()) for p in patterns if f"_f_{p}" in df.columns)
+    return 100.0 * hits / words
+
+
+def render_filler_insights_emotion(
+    fw: pd.DataFrame,
+    *,
+    emotion_order: Tuple[str, ...] = ("neutral", "happy", "annoyed"),
+    short_labels: Dict[str, str] | None = None,
+) -> None:
+    """Patterns, families, and contrasts across emotion tasks (fw must include _f_* columns)."""
+    short_labels = short_labels or {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
+
+    tasks_present = [t for t in emotion_order if fw["task"].eq(t).any()]
+    if len(tasks_present) < 1:
+        return
+
+    with st.expander("Deeper insights · emotion ↔ fillers", expanded=True):
+        st.caption(
+            "**Pooled /100 w** = pattern hits ÷ words in that task × 100. "
+            "**Mix %** = that pattern’s share of *all pattern hits summed* in that task (same bookkeeping as totals). "
+            "*like/well/so* also match grammatical uses."
+        )
+
+        st.markdown("##### Filler families by emotion")
+        fam_rows = []
+        for title, plist in FILLER_GROUPS:
+            row: Dict[str, object] = {"Family": title}
+            for t in tasks_present:
+                g = fw.loc[fw["task"].eq(t)]
+                row[short_labels[t]] = round(_pooled_pat_per100(g, plist), 3)
+            fam_rows.append(row)
+        fam_df = pd.DataFrame(fam_rows)
+        st.bar_chart(fam_df.set_index("Family"), height=min(260, 60 + 40 * len(fam_df)))
+        st.dataframe(fam_df, use_container_width=True, hide_index=True)
+
+        st.markdown("##### Top patterns per emotion (pooled /100 w)")
+        rk = 5
+        top_cols = st.columns(len(tasks_present))
+        rates: Dict[str, Dict[str, float]] = {}
+        for t in tasks_present:
+            g = fw.loc[fw["task"].eq(t)]
+            rates[t] = {p: _pooled_pat_per100(g, [p]) for p in ALL_FILLER_NAMES}
+        for i, t in enumerate(tasks_present):
+            with top_cols[i]:
+                ranked = sorted(rates[t].items(), key=lambda x: -x[1])[:rk]
+                tbl = pd.DataFrame(
+                    [{"#": j + 1, "pattern": p, "/100 w": round(rv, 3)} for j, (p, rv) in enumerate(ranked)]
+                )
+                st.markdown(f"**{short_labels[t]}**")
+                st.dataframe(tbl, use_container_width=True, hide_index=True, height=220)
+
+        st.markdown("##### Strongest emotion contrasts")
+        st.caption("**Range** = max − min pooled /100 w across emotions (larger ⇒ more unequal across tasks).")
+        contrast = []
+        for p in ALL_FILLER_NAMES:
+            vals = [rates[t][p] for t in tasks_present]
+            if not vals:
+                continue
+            rmin, rmax = min(vals), max(vals)
+            row = {"Pattern": p, "range": round(rmax - rmin, 4)}
+            for i, t in enumerate(tasks_present):
+                row[short_labels[t]] = round(rates[t][p], 3)
+            contrast.append(row)
+        con_df = pd.DataFrame(contrast).sort_values("range", ascending=False)
+        st.dataframe(con_df.round(4), use_container_width=True, hide_index=True, height=min(360, 52 + 22 * min(14, len(con_df))))
+
+        if "neutral" in tasks_present:
+            st.markdown("##### Relative change vs neutral (ratio)")
+            st.caption("Ratio = pooled /100 w for that emotion ÷ neutral. Above 1 means more dense than neutral.")
+            ratio_rows = []
+            for p in ALL_FILLER_NAMES:
+                base = rates["neutral"].get(p, 0.0)
+                if base < 1e-6:
+                    continue
+                rrow: Dict[str, object] = {"Pattern": p}
+                for t in tasks_present:
+                    if t == "neutral":
+                        continue
+                    rrow[f"{short_labels[t]} / Neutral"] = round(rates[t][p] / base, 3)
+                ratio_rows.append(rrow)
+            if ratio_rows:
+                rdf = pd.DataFrame(ratio_rows)
+                st.dataframe(rdf, use_container_width=True, hide_index=True, height=min(380, 48 + 22 * min(14, len(rdf))))
+
+        st.markdown("##### Mix · what fraction of fillers is each pattern?")
+        mix_rows = []
+        for p in ALL_FILLER_NAMES:
+            mr: Dict[str, object] = {"Pattern": p}
+            for t in tasks_present:
+                g = fw.loc[fw["task"].eq(t)]
+                fh = int(g["_filler_total"].sum())
+                hp = int(g[f"_f_{p}"].sum()) if f"_f_{p}" in g.columns else 0
+                mr[f"mix_{short_labels[t]} %"] = round(100.0 * hp / fh, 1) if fh else 0.0
+            mix_rows.append(mr)
+        mdf = pd.DataFrame(mix_rows).sort_values(
+            f"mix_{short_labels[tasks_present[0]]} %",
+            ascending=False,
+        )
+        st.dataframe(mdf.round(2), use_container_width=True, hide_index=True, height=min(380, 48 + 20 * min(14, len(mdf))))
+
+
+def render_filler_insights_phone_fm(fw: pd.DataFrame) -> None:
+    """F vs M: families, gaps, dominant words, mixture — fw must include filler columns."""
+    if "info_sex" not in fw.columns:
+        return
+    xm = fw.loc[_sex_fm_mask(fw["info_sex"])].copy()
+    xm["_sx"] = xm["info_sex"].astype(str).str.strip().str.upper()
+    if xm["_sx"].isin({"F", "M"}).sum() == 0:
+        return
+
+    with st.expander("Deeper insights · female vs male (phone)", expanded=True):
+        st.caption(
+            "**Δ (F − M)** = pooled /100 w female minus male. "
+            "Positive ⇒ higher female rate by this measure. Interpret descriptively (no stats here)."
+        )
+
+        st.markdown("##### Filler families")
+        grp_rows = []
+        for title, plist in FILLER_GROUPS:
+            row: Dict[str, object] = {"Family": title}
+            for code, lbl in (("F", "Female"), ("M", "Male")):
+                g = xm.loc[xm["_sx"].eq(code)]
+                row[f"{lbl} /100 w"] = round(_pooled_pat_per100(g, plist), 3)
+            row["Δ (F − M)"] = round(float(row["Female /100 w"]) - float(row["Male /100 w"]), 4)
+            grp_rows.append(row)
+        gdf = pd.DataFrame(grp_rows)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.bar_chart(
+                gdf.set_index("Family")[["Female /100 w", "Male /100 w"]].rename(
+                    columns={"Female /100 w": "Female", "Male /100 w": "Male"}
+                ),
+                height=220,
+            )
+        with c2:
+            st.dataframe(gdf, use_container_width=True, hide_index=True)
+
+        fm_pat: Dict[str, Tuple[float, float]] = {}
+        for p in ALL_FILLER_NAMES:
+            rf = rm = 0.0
+            gf = xm.loc[xm["_sx"].eq("F")]
+            gm = xm.loc[xm["_sx"].eq("M")]
+            if len(gf):
+                rf = _pooled_pat_per100(gf, [p])
+            if len(gm):
+                rm = _pooled_pat_per100(gm, [p])
+            fm_pat[p] = (rf, rm)
+
+        st.markdown("##### Largest female–male gaps (by pattern)")
+        gap_rows = []
+        for p, (rf, rm) in fm_pat.items():
+            gap_rows.append(
+                {
+                    "Pattern": p,
+                    "Female /100 w": round(rf, 3),
+                    "Male /100 w": round(rm, 3),
+                    "Δ (F − M)": round(rf - rm, 4),
+                }
+            )
+        gfp = pd.DataFrame(gap_rows)
+        gfp["|Δ|"] = gfp["Δ (F − M)"].abs()
+        gfp = gfp.sort_values("|Δ|", ascending=False).drop(columns=["|Δ|"])
+        st.dataframe(gfp, use_container_width=True, hide_index=True, height=min(400, 48 + 22 * len(gfp)))
+
+        st.markdown("##### Top patterns by sex (pooled /100 w)")
+        ph_cols = st.columns(2)
+        for ci, (lbl, code) in enumerate((("Female", "F"), ("Male", "M"))):
+            gx = xm.loc[xm["_sx"].eq(code)]
+            with ph_cols[ci]:
+                st.markdown(f"**{lbl}**")
+                if len(gx) == 0:
+                    st.caption("—")
+                    continue
+                ranked = sorted(
+                    [(p, _pooled_pat_per100(gx, [p])) for p in ALL_FILLER_NAMES],
+                    key=lambda x: -x[1],
+                )[:6]
+                tdf = pd.DataFrame(
+                    [{"#": j + 1, "pattern": p, "/100 w": round(rv, 3)} for j, (p, rv) in enumerate(ranked)]
+                )
+                st.dataframe(tdf, use_container_width=True, hide_index=True, height=240)
+
+        st.markdown("##### Who dominates each sex’s fillers?")
+        st.caption("**Share %** = that pattern’s hits ÷ summed filler hits for that sex (same summed-hit definition as totals).")
+        share_rows = []
+        for code, slab in (("F", "Female share %"), ("M", "Male share %")):
+            g = xm.loc[xm["_sx"].eq(code)]
+            tot = int(g["_filler_total"].sum())
+            for p in ALL_FILLER_NAMES:
+                nh = int(g[f"_f_{p}"].sum())
+                pct = 100.0 * nh / tot if tot else 0.0
+                share_rows.append({"Pattern": p, "_sex_col": slab, "share %": pct})
+        sdf = pd.DataFrame(share_rows)
+        piv = sdf.pivot(index="Pattern", columns="_sex_col", values="share %").reset_index().fillna(0.0)
+        sort_c = "Female share %" if "Female share %" in piv.columns else piv.columns[-1]
+        piv = piv.sort_values(sort_c, ascending=False)
+        st.dataframe(piv.round(2), use_container_width=True, hide_index=True, height=min(420, 48 + 20 * len(piv)))
+
 
 def _count_fillers_one(text: str) -> Tuple[int, Dict[str, int]]:
     """Returns (total hits, per-label counts). Overlapping regex can double-count marginally; ok for EDA."""
@@ -448,7 +660,151 @@ def _filler_mean_rate_chart(df: pd.DataFrame, index_col: str) -> pd.DataFrame:
     )
 
 
-def render_filler_tab(f_base: pd.DataFrame) -> None:
+def _sex_fm_mask(series: pd.Series) -> pd.Series:
+    """True where info_sex is F or M (normalized)."""
+    sx = series.astype(str).str.strip().str.upper()
+    return sx.isin({"F", "M"})
+
+
+def render_filler_emotion_by_task(fw: pd.DataFrame, *, emotion_order: Tuple[str, ...] = ("neutral", "happy", "annoyed")) -> None:
+    """Compare fillers across emotion elicitation tasks (subset of corpus tasks)."""
+    st.subheader("By emotion task")
+    st.caption(
+        "**Mean / file** = mean of each transcript’s filler hits ÷ word count × 100. "
+        "**Pooled /100 w** = all hits in that task ÷ all words × 100. "
+        "Tasks are ordered neutral → happy → annoyed when present."
+    )
+    rows: List[Dict[str, object]] = []
+    for t in emotion_order:
+        g = fw.loc[fw["task"].eq(t)]
+        if len(g) == 0:
+            continue
+        wsum = int(g["_word_count"].sum())
+        hsum = int(g["_filler_total"].sum())
+        lbl = TASK_SPECS.get(t, {}).get("label", str(t))
+        rows.append(
+            {
+                "Task": lbl,
+                "key": t,
+                "Files": len(g),
+                "Words": wsum,
+                "Total hits": hsum,
+                "Pooled /100 w": (100.0 * hsum / wsum) if wsum else 0.0,
+                "Mean / file": float(g["_filler_per100"].mean()),
+            }
+        )
+    if not rows:
+        st.warning("No rows for the expected emotion tasks.")
+        return
+    summary = pd.DataFrame(rows)
+    st.bar_chart(
+        summary.set_index("Task")[["Mean / file"]].rename(columns={"Mean / file": "Mean filler matches / 100 words"}),
+        height=260,
+    )
+    show = summary.drop(columns=["key"], errors="ignore")
+    st.dataframe(show.round(3), use_container_width=True, hide_index=True, height=min(220, 40 + 28 * len(show)))
+
+    short_task = {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
+    st.markdown("**Per pattern (pooled matches / 100 words within each emotion task)**")
+    pat_rows: List[Dict[str, object]] = []
+    for name in ALL_FILLER_NAMES:
+        r: Dict[str, object] = {"Pattern": name}
+        for t in emotion_order:
+            g = fw.loc[fw["task"].eq(t)]
+            if len(g) == 0:
+                continue
+            w = int(g["_word_count"].sum())
+            hits = int(g[f"_f_{name}"].sum())
+            r[short_task.get(t, t)] = (100.0 * hits / w) if w else 0.0
+        pat_rows.append(r)
+    pat_df = pd.DataFrame(pat_rows)
+    drop_pat = {"Pattern"}
+    num_cols = [c for c in pat_df.columns if c not in drop_pat]
+    if num_cols:
+        pat_df = pat_df.sort_values(num_cols[0], ascending=False)
+    st.dataframe(pat_df.round(3), use_container_width=True, hide_index=True, height=min(420, 40 + 22 * len(pat_df)))
+
+
+def render_filler_female_male(fw: pd.DataFrame, *, compact_caption: bool = False) -> None:
+    """F vs M: total filler hits, word counts, pooled and per-file rates, per-pattern counts."""
+    if "info_sex" not in fw.columns:
+        st.caption("— No sex column for F vs M comparison.")
+        return
+
+    x = fw.copy()
+    n_excl = int((~_sex_fm_mask(x["info_sex"])).sum())
+    xm = x.loc[_sex_fm_mask(x["info_sex"])].copy()
+    xm["_sx"] = xm["info_sex"].astype(str).str.strip().str.upper()
+
+    if len(xm) == 0:
+        st.warning("No rows with sex coded **F** or **M** under current filters.")
+        return
+
+    if compact_caption:
+        st.caption(
+            f"Pooled /100 w = total hits ÷ total words in that sex; mean / file = average per transcript. "
+            f"Excluded {n_excl:,} file(s) without F/M code."
+        )
+    else:
+        st.subheader("Female vs male")
+        st.caption(
+            "**Filler matches** = sum of regex hits on the orthographic tier (same patterns as below). "
+            "**Pooled /100 w** = total hits ÷ total word tokens × 100 within each sex. "
+            "**Mean / file** = average of each file’s hits÷words×100 (one vote per transcript). "
+            f"Excluded here: **{n_excl:,}** file(s) with missing or non–F/M sex codes."
+        )
+
+    rows = []
+    for code, label in (("F", "Female"), ("M", "Male")):
+        g = xm.loc[xm["_sx"] == code]
+        if len(g) == 0:
+            continue
+        wsum = int(g["_word_count"].sum())
+        hsum = int(g["_filler_total"].sum())
+        rows.append(
+            {
+                "Sex": label,
+                "Files": len(g),
+                "Words": wsum,
+                "Filler hits (total)": hsum,
+                "Pooled matches / 100 w": (100.0 * hsum / wsum) if wsum else 0.0,
+                "Mean rate / file": float(g["_filler_per100"].mean()),
+            }
+        )
+    summary = pd.DataFrame(rows)
+    c_left, c_right = st.columns((1, 1))
+    with c_left:
+        st.dataframe(
+            summary.round(3),
+            use_container_width=True,
+            hide_index=True,
+            height=min(120 + 28 * len(summary), 220),
+        )
+    with c_right:
+        if len(summary) >= 1:
+            ch = summary.set_index("Sex")[["Mean rate / file"]].rename(
+                columns={"Mean rate / file": "Mean matches / 100 words (per file)"}
+            )
+            st.bar_chart(ch, height=220)
+
+    pat_rows = []
+    for name in ALL_FILLER_NAMES:
+        r: Dict[str, object] = {"Pattern": name}
+        for code, label in (("F", "Female"), ("M", "Male")):
+            g = xm.loc[xm["_sx"] == code]
+            w = int(g["_word_count"].sum())
+            hits = int(g[f"_f_{name}"].sum())
+            r[f"{label} hits"] = hits
+            r[f"{label} /100w"] = (100.0 * hits / w) if w else 0.0
+        pat_rows.append(r)
+    pat_df = pd.DataFrame(pat_rows)
+    sort_col = "Female /100w" if "Female /100w" in pat_df.columns else pat_df.columns[-1]
+    pat_df = pat_df.sort_values(sort_col, ascending=False)
+    st.markdown("**Per-pattern counts by sex** (pooled words within each sex)")
+    st.dataframe(pat_df.round(3), use_container_width=True, hide_index=True, height=min(400, 36 + 24 * len(pat_df)))
+
+
+def render_filler_tab(f_base: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
     st.markdown("### Fillers")
     with st.expander("What the numbers mean", expanded=False):
         st.markdown(
@@ -465,19 +821,24 @@ So it is **matches per 100 words** for that recording.
 
 **Top summary row “Overall”** — mean file rate (same idea as the group charts).
 
+**Female vs male** — total **filler hits** and **word counts** by sex, plus pooled and per-file rates and a per-pattern table (F/M codes only; other/missing sex excluded from that block).
+
 *like* / *well* / *so* use plain word matching and also hit grammatical uses.
 
 **Sidebar filters** apply to everything on this tab.
             """
         )
-    st.caption("Open **What the numbers mean** for definitions. Group charts = **mean of per-file rates** (except *Patterns*).")
+    st.caption(
+        "Open **What the numbers mean** for definitions. "
+        "Group charts = **mean of per-file rates** (except *Patterns*)."
+    )
 
     c1, c2 = st.columns(2)
     with c1:
         excl_vow = st.checkbox(
             "Drop vowel task from situation chart",
             value=True,
-            key="filler_excl_vowels",
+            key=f"{widget_key_prefix}filler_excl_vowels",
             help="Vowel clips are [a] holds—not dialogue.",
         )
     with c2:
@@ -487,7 +848,7 @@ So it is **matches per 100 words** for that recording.
             500,
             20,
             10,
-            key="filler_min_words",
+            key=f"{widget_key_prefix}filler_min_words",
         )
 
     work = f_base[f_base["_word_count"] >= min_words].copy()
@@ -509,6 +870,8 @@ So it is **matches per 100 words** for that recording.
     m2.metric("Words", f"{total_words:,}")
     m3.metric("Matches", f"{total_hits:,}")
     m4.metric("Mean rate (per file)", f"{mean_file_rate:.2f}")
+
+    render_filler_female_male(fw)
 
     hits = {n: int(fw[f"_f_{n}"].sum()) for n in ALL_FILLER_NAMES}
     inv_df = pd.DataFrame(
