@@ -736,7 +736,7 @@ def main() -> None:
     emotion = df[df["task"].isin(EMOTIONS)].copy()
     fillers = list(ordered_fillers())
 
-    st.title("Filler words in your study")
+    st.title("Filler Words at UCLA, 18 to 24 year olds")
     st.write(
         "This tool **counts filler words** in each recording and shows **simple charts** for your four research questions. "
         "There are no statistical tests — just averages and pictures you can talk through in a presentation."
