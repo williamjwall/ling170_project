@@ -136,60 +136,222 @@ def _surface_is_target(token: Any) -> bool:
     return w in AMBIGUOUS_LEMMAS
 
 
-def hybrid_classify_token(token: Any) -> bool:
-    """
-    Return True if this token should count toward hybrid 'filler' for like/well/so.
-    False = grammatical / meaningful (excluded from hybrid count).
+_COPULA_HEADS = frozenset({"be", "is", "are", "was", "were", "am", "been", "being"})
+_INTENSIFIER_SO_HEADS = frozenset({"far", "many", "much", "long", "often", "few", "little"})
+_LIKE_QUANTIFIER_NEXT = frozenset({
+    "million", "thousand", "hundred", "billion", "dozen", "tons", "lot", "lots",
+    "couple", "few", "many", "much", "some", "any",
+})
+_SO_INTENSIFIER_NEXT = frozenset({
+    "upset", "lazy", "busy", "tired", "mean", "cool", "good", "bad", "angry", "happy",
+    "sad", "mad", "funny", "weird", "hard", "easy", "fast", "slow", "big", "small",
+    "young", "old", "hot", "cold", "loud", "quiet", "scary", "nice", "great", "awful",
+    "pretty", "really", "very", "much", "many", "few", "little", "long", "far",
+})
+_FILLER_LABEL = {"like": "filtered_like", "well": "filtered_well", "so": "filtered_so"}
+_RE_AMBIGUOUS_WORD = re.compile(r"\b(like|well|so)\b", re.I)
 
-    this is for will, notes for later debugginggggggggg
-    - Uses spaCy token.pos_, token.dep_, token.head; model version changes tag distributions.
-    - Default branch returns True (lean filler) when tags don't match a "grammatical" branch.
+
+def _at_discourse_boundary(text: str, start: int) -> bool:
+    """True when the token begins a sentence or strong clause boundary."""
+    if start <= 0:
+        return True
+    prefix = text[:start].rstrip()
+    if not prefix:
+        return True
+    return prefix[-1] in ".!?"
+
+
+def _preceded_by_as(text: str, start: int) -> bool:
+    left = text[:start].rstrip().lower()
+    return left.endswith(" as") or left.endswith("\tas")
+
+
+def _next_word_after(text: str, end: int) -> str:
+    m = re.match(r"\s+([A-Za-z'+]+)", text[end:])
+    return m.group(1).lower() if m else ""
+
+
+def hybrid_classify_tags(
+    lemma: str,
+    pos: str,
+    dep: str,
+    head_lemma: str,
+    *,
+    text: str = "",
+    start: int = 0,
+    end: int = 0,
+) -> bool:
     """
-    lem = token.lemma_.lower()
-    pos, dep = token.pos_, token.dep_
-    head = token.head
+    Return True if this *like* / *well* / *so* token is a discourse filler.
+
+    False = grammatical / content use (kept as the surface word in simplified exports).
+    """
+    lem = str(lemma).lower()
+    pos = str(pos)
+    dep = str(dep)
+    head = str(head_lemma).lower()
 
     if lem == "well":
         if pos == "INTJ" or dep == "intj":
             return True
-        if pos == "ADJ":
+        if pos in ("ADJ", "NOUN", "PROPN"):
             return False
         if pos == "ADV":
+            if _preceded_by_as(text, start):
+                return False
+            if _at_discourse_boundary(text, start):
+                return True
             return False
-        if pos == "NOUN":
-            return False
-        return True
+        if _at_discourse_boundary(text, start):
+            return True
+        return False
 
     if lem == "so":
         if pos == "INTJ" or dep == "intj":
             return True
-        if pos == "CCONJ":
+        if pos in ("CCONJ", "SCONJ"):
             return False
-        if pos == "SCONJ":
+        nxt = _next_word_after(text, end)
+        if nxt in _INTENSIFIER_SO_HEADS or nxt in _SO_INTENSIFIER_NEXT or head in _SO_INTENSIFIER_NEXT:
             return False
         if pos == "ADV" and dep == "advmod":
-            if head.pos_ in ("ADJ", "ADV", "NOUN", "DET", "NUM"):
-                return False
-            try:
-                nbor = token.nbor(1)
-            except (IndexError, KeyError):
-                nbor = None
-            if head.pos_ in ("VERB", "AUX") and nbor is not None and nbor.text.strip() == ",":
+            if _at_discourse_boundary(text, start):
                 return True
-            if head.pos_ in ("VERB", "AUX") and token.i == token.sent[0].i:
+            if end < len(text) and text[end : end + 1] == ",":
                 return True
-        return True
+            return True
+        if _at_discourse_boundary(text, start):
+            return True
+        return False
 
     if lem == "like":
-        if pos == "ADP" and dep == "prep":
+        nxt = _next_word_after(text, end)
+        if nxt in _LIKE_QUANTIFIER_NEXT:
             return False
         if pos == "VERB":
             return False
         if pos in ("NOUN", "PROPN", "ADJ", "NUM"):
             return False
+        if pos == "ADP" and dep == "prep":
+            if head in _COPULA_HEADS:
+                return True
+            return False
+        if pos in ("INTJ", "PART", "SCONJ") or dep in ("intj", "mark", "discourse"):
+            return True
+        if head in _COPULA_HEADS and dep in ("prep", "mark", "intj"):
+            return True
         return True
 
-    return True
+    return False
+
+
+def hybrid_classify_token(token: Any) -> bool:
+    """
+    Return True if this token should count toward hybrid 'filler' for like/well/so.
+    False = grammatical / meaningful (excluded from hybrid count).
+    """
+    head = token.head
+    head_lm = head.lemma_.lower() if head is not None else ""
+    return hybrid_classify_tags(
+        token.lemma_.lower(),
+        token.pos_,
+        token.dep_,
+        head_lm,
+        text=token.doc.text,
+        start=int(token.idx),
+        end=int(token.idx) + len(token.text),
+    )
+
+
+def occurrence_is_filler(occ: AmbiguousOccurrence, *, text: str = "") -> bool:
+    """Re-evaluate filler vs grammatical using stored tags (and optional full text)."""
+    raw = text if text else ""
+    return hybrid_classify_tags(
+        occ.lemma,
+        occ.pos,
+        occ.dep,
+        occ.head_lemma,
+        text=raw,
+        start=occ.start,
+        end=occ.end,
+    )
+
+
+def _heuristic_unparsed_filler(lemma: str, text: str, start: int, end: int) -> bool:
+    """Regex fallback when spaCy did not align a token."""
+    lem = lemma.lower()
+    if lem == "well" and _preceded_by_as(text, start):
+        return False
+    if lem == "so":
+        after = text[end : end + 12].lower()
+        if re.match(r"\s+far\b", after):
+            return False
+        if re.match(r"\s+(many|much|long|few|little)\b", after):
+            return False
+    if lem == "like":
+        nxt = _next_word_after(text, end)
+        if nxt in _LIKE_QUANTIFIER_NEXT:
+            return False
+        before = text[max(0, start - 12) : start].lower()
+        if re.search(r"\b(was|were|is|are|am|be|been|being)\s+$", before):
+            return True
+    if _at_discourse_boundary(text, start):
+        return True
+    return lem == "like"
+
+
+def _span_overlaps(a: int, b: int, occupied: List[Tuple[int, int]]) -> bool:
+    for x, y in occupied:
+        if a < y and b > x:
+            return True
+    return False
+
+
+def text_with_filtered_fillers(raw: str, occurrences: List[AmbiguousOccurrence]) -> str:
+    """
+    Keep grammatical *like* / *well* / *so* as-is; replace discourse fillers with
+    ``filtered_like``, ``filtered_well``, or ``filtered_so``.
+    """
+    s = str(raw)
+    if not s:
+        return s
+
+    occupied: List[Tuple[int, int]] = [(o.start, o.end) for o in occurrences]
+    replacements: List[Tuple[int, int, str]] = []
+
+    for o in occurrences:
+        if occurrence_is_filler(o, text=s):
+            label = _FILLER_LABEL.get(o.lemma.lower())
+            if label:
+                replacements.append((o.start, o.end, label))
+
+    for m in _RE_AMBIGUOUS_WORD.finditer(s):
+        a, b = m.start(), m.end()
+        if _span_overlaps(a, b, occupied):
+            continue
+        lem = m.group(1).lower()
+        if _heuristic_unparsed_filler(lem, s, a, b):
+            label = _FILLER_LABEL.get(lem)
+            if label:
+                replacements.append((a, b, label))
+
+    if not replacements:
+        return s
+
+    n = len(s)
+    clipped: List[Tuple[int, int, str]] = []
+    for a, b, label in replacements:
+        a = max(0, min(int(a), n))
+        b = max(0, min(int(b), n))
+        if a < b:
+            clipped.append((a, b, label))
+    clipped.sort(key=lambda x: x[0], reverse=True)
+
+    out = s
+    for a, b, label in clipped:
+        out = out[:a] + label + out[b:]
+    return out
 
 
 def analyze_transcript(text: str, nlp: Any) -> Dict[str, Any]:
@@ -297,6 +459,39 @@ def _merge_spans(spans: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
         else:
             merged.append((a, b))
     return merged
+
+
+_RE_COLLAPSE_WS = re.compile(r"\s+")
+
+
+def text_without_nonfiller_ambiguous(raw: str, occurrences: List[AmbiguousOccurrence]) -> str:
+    """
+    Delete *like* / *well* / *so* spans that ``hybrid_classify_token`` marked as not filler.
+    Keeps filler uses and all other words; collapses whitespace where gaps were left.
+    """
+    spans = [(o.start, o.end) for o in occurrences if not o.hybrid_is_filler]
+    if not spans:
+        return str(raw)
+    s = str(raw)
+    n = len(s)
+    clipped: List[Tuple[int, int]] = []
+    for a, b in spans:
+        a = max(0, min(int(a), n))
+        b = max(0, min(int(b), n))
+        if a < b:
+            clipped.append((a, b))
+    if not clipped:
+        return s
+    merged = _merge_spans(clipped)
+    parts: List[str] = []
+    cur = 0
+    for a, b in merged:
+        if a > cur:
+            parts.append(s[cur:a])
+        cur = max(cur, b)
+    if cur < n:
+        parts.append(s[cur:])
+    return _RE_COLLAPSE_WS.sub(" ", "".join(parts)).strip()
 
 
 def html_apply_marks(text: str, spans: List[Tuple[int, int, str]]) -> str:

@@ -90,6 +90,20 @@ def story_label(task: str) -> str:
     return str(task).capitalize()
 
 
+def transcript_label(
+    speaker_id: object, task: object, sex: object, age: object, words: int | None = None
+) -> str:
+    meta = str(sex).strip()
+    if pd.notna(age):
+        try:
+            meta += f", age {int(age)}"
+        except (TypeError, ValueError):
+            pass
+    if words is not None:
+        meta += f", {int(words)} words"
+    return f"Speaker {int(speaker_id)} — {task} ({meta})"
+
+
 def reading_guide() -> None:
     with st.expander("How to read these charts (30 seconds)", expanded=False):
         st.markdown(
@@ -772,7 +786,7 @@ def main() -> None:
 
         if mode == "Pick one transcript":
             labels = [
-                f"Speaker {int(r.speaker_id)} — {r.task} ({r.info_sex}, {int(r.words)} words)"
+                transcript_label(r.speaker_id, r.task, r.info_sex, r.info_age, r.words)
                 for r in view.itertuples(index=False)
             ]
             if not labels:
@@ -792,7 +806,9 @@ def main() -> None:
             v2 = view if not pick_sp else view[view["speaker_id"].isin(pick_sp)]
             v2 = v2.sort_values(["speaker_id", "task"], kind="stable")
             for _, row in v2.head(cap).iterrows():
-                title = f"Speaker {int(row['speaker_id'])} — {row['task']} ({row['info_sex']})"
+                title = transcript_label(
+                    row["speaker_id"], row["task"], row["info_sex"], row["info_age"]
+                )
                 with st.expander(title):
                     body = transcript_highlight_html(str(row["text"]), highlight=hl)
                     st.markdown(
