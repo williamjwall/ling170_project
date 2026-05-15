@@ -795,7 +795,7 @@ def main() -> None:
                 i = st.selectbox("Transcript", range(len(labels)), format_func=lambda j: labels[j])
                 row = view.iloc[i]
                 st.markdown(f"**{labels[i]}**")
-                body = transcript_highlight_html(str(row.text), highlight=hl)
+                body = transcript_highlight_html(str(row.text), highlight=hl, for_display=True)
                 st.markdown(
                     f'<div style="white-space: pre-wrap; line-height: 1.55;">{body}</div>',
                     unsafe_allow_html=True,
@@ -810,7 +810,7 @@ def main() -> None:
                     row["speaker_id"], row["task"], row["info_sex"], row["info_age"]
                 )
                 with st.expander(title):
-                    body = transcript_highlight_html(str(row["text"]), highlight=hl)
+                    body = transcript_highlight_html(str(row["text"]), highlight=hl, for_display=True)
                     st.markdown(
                         f'<div style="white-space: pre-wrap; line-height: 1.55;">{body}</div>',
                         unsafe_allow_html=True,

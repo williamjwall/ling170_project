@@ -62,6 +62,9 @@ FILLER_WORDS: list[str] = [
 # Not auto-counted on raw transcripts (grammatical vs filler was decided in manual coding).
 GRAMMATICAL_AMBIGUOUS: frozenset[str] = frozenset({"like", "so", "actually", "basically"})
 
+FILLER_PREFIX = "filtered_"
+FILTERED_MARKER_FILLERS: frozenset[str] = frozenset({"like", "so", "well"})
+
 # Research buckets (H3 / H4): every token in FILLER_WORDS should appear exactly once.
 CATEGORY_LABELS: tuple[str, ...] = ("Placeholders", "Californese", "Feedback")
 
@@ -151,27 +154,99 @@ def word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text.lower()))
 
 
+def uses_filtered_markers(text: str) -> bool:
+    return FILLER_PREFIX in text.lower()
+
+
+def display_transcript_text(text: str) -> str:
+    """Readable transcript: drop the ``filtered_`` coding prefix from marked tokens."""
+    if not isinstance(text, str):
+        return ""
+    return re.sub(
+        r"\bfiltered_(like|so|well)\b",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+
+@lru_cache(maxsize=None)
+def _filtered_marker_pattern() -> re.Pattern[str]:
+    alts = "|".join(
+        re.escape(f"{FILLER_PREFIX}{w}")
+        for w in sorted(FILTERED_MARKER_FILLERS, key=len, reverse=True)
+    )
+    return re.compile(r"\b(?:" + alts + r")\b", flags=re.IGNORECASE)
+
+
+def _filtered_prefix_extra(raw: str, pos: int) -> int:
+    extra = 0
+    for m in _filtered_marker_pattern().finditer(raw):
+        if m.end() <= pos:
+            word = m.group(0)[len(FILLER_PREFIX) :]
+            extra += len(m.group(0)) - len(word)
+    return extra
+
+
+def _claim_span(taken: list[bool], s: int, e: int) -> bool:
+    if any(taken[s:e]):
+        return False
+    for i in range(s, e):
+        taken[i] = True
+    return True
+
+
 def find_filler_spans(text: str, skip_grammatical: bool = False) -> list[tuple[int, int, str]]:
     if not isinstance(text, str) or not text:
         return []
-    lowered = text.lower()
     n = len(text)
     taken = [False] * n
     hits: list[tuple[int, int, str]] = []
+    coded = uses_filtered_markers(text)
 
+    if coded:
+        for m in _filtered_marker_pattern().finditer(text):
+            s, e = m.span()
+            if s >= n or e > n:
+                continue
+            label = m.group(0)[len(FILLER_PREFIX) :].lower()
+            if label in FILTERED_MARKER_FILLERS and _claim_span(taken, s, e):
+                hits.append((s, e, label))
+
+    skip_labels: set[str] = set()
+    if skip_grammatical:
+        skip_labels |= GRAMMATICAL_AMBIGUOUS
+    if coded:
+        skip_labels |= FILTERED_MARKER_FILLERS
+
+    lowered = text.lower()
     for regex, label in _compiled_patterns(skip_grammatical):
+        if label in skip_labels:
+            continue
         for m in regex.finditer(lowered):
             s, e = m.span()
             if s >= n or e > n:
                 continue
-            if any(taken[s:e]):
-                continue
-            for i in range(s, e):
-                taken[i] = True
-            hits.append((s, e, label))
+            if _claim_span(taken, s, e):
+                hits.append((s, e, label))
 
     hits.sort(key=lambda h: h[0])
     return hits
+
+
+def _spans_for_display(
+    raw: str, spans: list[tuple[int, int, str]]
+) -> list[tuple[int, int, str]]:
+    display = display_transcript_text(raw)
+    if not spans:
+        return []
+    out: list[tuple[int, int, str]] = []
+    for s, e, lab in spans:
+        ds = s - _filtered_prefix_extra(raw, s)
+        de = e - _filtered_prefix_extra(raw, e)
+        if 0 <= ds < de <= len(display):
+            out.append((ds, de, lab))
+    return out
 
 
 def count_by_filler(text: str, skip_grammatical: bool = False) -> dict[str, int]:
@@ -190,14 +265,23 @@ def count_by_category(text: str, skip_grammatical: bool = False) -> dict[str, in
 
 
 def transcript_highlight_html(
-    text: str, highlight: set[str] | None = None, skip_grammatical: bool = False
+    text: str,
+    highlight: set[str] | None = None,
+    skip_grammatical: bool = False,
+    *,
+    for_display: bool = False,
 ) -> str:
     if not isinstance(text, str):
         text = ""
-    spans = find_filler_spans(text, skip_grammatical=skip_grammatical)
+    raw = text
+    spans = find_filler_spans(raw, skip_grammatical=skip_grammatical)
     if highlight is not None:
         h = {x.strip().lower() for x in highlight}
         spans = [t for t in spans if t[2] in h]
+
+    if for_display:
+        text = display_transcript_text(raw)
+        spans = _spans_for_display(raw, spans)
 
     parts: list[str] = []
     cur = 0
