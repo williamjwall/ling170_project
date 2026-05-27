@@ -8,6 +8,7 @@ Run from repo root:
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -15,6 +16,17 @@ import pandas as pd
 import streamlit as st
 
 REPO_ROOT = Path(__file__).resolve().parent
+_EDA_DIR = REPO_ROOT / "EDA"
+if str(_EDA_DIR) not in sys.path:
+    sys.path.insert(0, str(_EDA_DIR))
+
+from simple_stats import compare_metrics_in_dataframe
+from stats_display import (
+    pvalue_help_expander,
+    render_metrics_results_table,
+    render_multi_group_block,
+    render_two_group_block,
+)
 # Fixed corpus path (orthographic rows + hybrid columns). Regenerate offline only.
 CORPUS_CSV = REPO_ROOT / "ucla_box_parsed" / "ucla_text_state_parsed_with_hybrid.csv"
 # Back-compat name for scripts / pages that import DEFAULT_CSV.
@@ -277,7 +289,7 @@ def render_filler_insights_phone_fm(fw: pd.DataFrame) -> None:
     with st.expander("Deeper insights · female vs male (phone)", expanded=True):
         st.caption(
             "**Δ (F − M)** = pooled /100 w female minus male. "
-            "Positive ⇒ higher female rate by this measure. Interpret descriptively (no stats here)."
+            "Positive ⇒ higher female rate by this measure. Per-file p-values are on the **Fillers** tab."
         )
 
         st.markdown("##### Filler families")
@@ -677,6 +689,178 @@ def _sex_fm_mask(series: pd.Series) -> pd.Series:
     return sx.isin({"F", "M"})
 
 
+EMO_TASKS = ("neutral", "happy", "annoyed")
+
+
+def _attach_pattern_rate_columns(fw: pd.DataFrame) -> pd.DataFrame:
+    """Per-file rate (hits ÷ words × 100) for total and each filler pattern."""
+    work = fw.copy()
+    wsafe = work["_word_count"].replace(0, float("nan"))
+    for name in ALL_FILLER_NAMES:
+        hit = f"_f_{name}"
+        if hit in work.columns:
+            work[f"_rate_{name}"] = 100.0 * work[hit] / wsafe
+    for title, plist in FILLER_GROUPS:
+        slug = title.split("(")[0].strip().lower().replace(" ", "_")[:24]
+        fam_cols = [f"_f_{p}" for p in plist if f"_f_{p}" in work.columns]
+        if fam_cols:
+            work[f"_rate_{slug}"] = 100.0 * work[fam_cols].sum(axis=1) / wsafe
+    return work
+
+
+def _filler_rate_metric_cols(fw: pd.DataFrame) -> tuple[list[str], dict[str, str]]:
+    cols = ["_filler_per100"]
+    labels: dict[str, str] = {"_filler_per100": "All fillers per 100 words"}
+    for name in ALL_FILLER_NAMES:
+        rc = f"_rate_{name}"
+        if rc in fw.columns:
+            cols.append(rc)
+            labels[rc] = name
+    for title, _plist in FILLER_GROUPS:
+        slug = title.split("(")[0].strip().lower().replace(" ", "_")[:24]
+        rc = f"_rate_{slug}"
+        if rc in fw.columns:
+            cols.append(rc)
+            labels[rc] = title
+    return cols, labels
+
+
+def render_filler_pvalues_sex(fw: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
+    """Mann-Whitney U: female vs male on per-file filler rates."""
+    sub = fw.loc[_sex_fm_mask(fw["info_sex"]) & (fw["_word_count"] > 0)].copy()
+    sub["_sx"] = sub["info_sex"].astype(str).str.strip().str.upper()
+    if len(sub.loc[sub["_sx"] == "F"]) < 2 or len(sub.loc[sub["_sx"] == "M"]) < 2:
+        st.caption("Not enough F/M recordings for p-values.")
+        return
+    work = _attach_pattern_rate_columns(sub)
+    metric_cols, metric_labels = _filler_rate_metric_cols(work)
+    st.markdown("##### Female vs male · p-values")
+    pvalue_help_expander(key=f"{widget_key_prefix}p_sex")
+    render_two_group_block(
+        work.assign(info_sex=work["_sx"]),
+        "info_sex",
+        "_filler_per100",
+        label_a="Female",
+        label_b="Male",
+        code_a="F",
+        code_b="M",
+        metric_name="All fillers per 100 words",
+        title="Headline: all fillers",
+    )
+    table_cols = [c for c in metric_cols if c != "_filler_per100"]
+    results = compare_metrics_in_dataframe(
+        work,
+        "_sx",
+        table_cols,
+        group_order=["F", "M"],
+        metric_labels=metric_labels,
+        group_labels={"F": "Female", "M": "Male"},
+    )
+    render_metrics_results_table(
+        results,
+        caption="Mann-Whitney U on each recording’s rate. “Worth mentioning?” = p < 0.05.",
+    )
+
+
+def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
+    """Kruskal-Wallis across neutral / happy / annoyed when those tasks are in the slice."""
+    present = [t for t in EMO_TASKS if fw["task"].eq(t).any()]
+    if len(present) < 2:
+        return
+    sub = fw.loc[fw["task"].isin(present) & (fw["_word_count"] > 0)].copy()
+    work = _attach_pattern_rate_columns(sub)
+    metric_cols, metric_labels = _filler_rate_metric_cols(work)
+    task_labels = {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
+    st.markdown("##### Emotion tasks · p-values")
+    pvalue_help_expander(key=f"{widget_key_prefix}p_emo")
+    if len(present) >= 3:
+        render_multi_group_block(
+            work,
+            "task",
+            "_filler_per100",
+            group_order=list(EMO_TASKS),
+            group_labels=task_labels,
+            metric_name="All fillers per 100 words",
+            title="Headline: all fillers across story types",
+        )
+        table_cols = [c for c in metric_cols if c != "_filler_per100"]
+        results = compare_metrics_in_dataframe(
+            work,
+            "task",
+            table_cols,
+            group_order=list(EMO_TASKS),
+            metric_labels=metric_labels,
+            group_labels=task_labels,
+        )
+    else:
+        t0, t1 = present[0], present[1]
+        render_two_group_block(
+            work,
+            "task",
+            "_filler_per100",
+            label_a=task_labels.get(t0, t0),
+            label_b=task_labels.get(t1, t1),
+            code_a=t0,
+            code_b=t1,
+            metric_name="All fillers per 100 words",
+        )
+        results = compare_metrics_in_dataframe(
+            work,
+            "task",
+            metric_cols,
+            group_order=present,
+            metric_labels=metric_labels,
+            group_labels=task_labels,
+        )
+    render_metrics_results_table(results)
+
+
+def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
+    """Kruskal-Wallis across EDA situation categories (monologue, phone, etc.)."""
+    if "_eda_category" not in fw.columns:
+        return
+    sub = fw.loc[fw["_word_count"] > 0].copy()
+    cats = [c for c in EDA_CATEGORY_ORDER if (sub["_eda_category"] == c).any()]
+    if len(cats) < 2:
+        return
+    work = _attach_pattern_rate_columns(sub.loc[sub["_eda_category"].isin(cats)])
+    metric_cols, metric_labels = _filler_rate_metric_cols(work)
+    sit_labels = {c: EDA_CATEGORY_LABEL.get(c, c) for c in cats}
+    st.markdown("##### Situation · p-values")
+    pvalue_help_expander(key=f"{widget_key_prefix}p_sit")
+    if len(cats) >= 3:
+        render_multi_group_block(
+            work,
+            "_eda_category",
+            "_filler_per100",
+            group_order=cats,
+            group_labels=sit_labels,
+            metric_name="All fillers per 100 words",
+            title="Headline: all fillers across situations",
+        )
+    else:
+        render_two_group_block(
+            work,
+            "_eda_category",
+            "_filler_per100",
+            label_a=sit_labels[cats[0]],
+            label_b=sit_labels[cats[1]],
+            code_a=cats[0],
+            code_b=cats[1],
+            metric_name="All fillers per 100 words",
+        )
+    table_cols = [c for c in metric_cols if c != "_filler_per100"]
+    results = compare_metrics_in_dataframe(
+        work,
+        "_eda_category",
+        table_cols,
+        group_order=cats,
+        metric_labels=metric_labels,
+        group_labels=sit_labels,
+    )
+    render_metrics_results_table(results, caption="Kruskal-Wallis by situation (per-file rates).")
+
+
 def render_filler_emotion_by_task(fw: pd.DataFrame, *, emotion_order: Tuple[str, ...] = ("neutral", "happy", "annoyed")) -> None:
     """Compare fillers across emotion elicitation tasks (subset of corpus tasks)."""
     st.subheader("By emotion task")
@@ -840,6 +1024,8 @@ So it is **matches per 100 words** for that recording.
 
 **Female vs male** — total **filler hits** and **word counts** by sex, plus pooled and per-file rates and a per-pattern table (F/M codes only; other/missing sex excluded from that block).
 
+**p-values** — Mann-Whitney (F vs M) and Kruskal-Wallis (emotion tasks or situations) on **per-file** rates (fillers per 100 words). **p < 0.05** = worth mentioning; not proof of a real-world difference.
+
 *like* / *well* / *so* use plain word matching and also hit grammatical uses.
 
 **Sidebar filters** apply to everything on this tab.
@@ -889,6 +1075,13 @@ So it is **matches per 100 words** for that recording.
     m4.metric("Mean rate (per file)", f"{mean_file_rate:.2f}")
 
     render_filler_female_male(fw)
+
+    with st.expander("Statistical checks (p-values)", expanded=True):
+        render_filler_pvalues_sex(fw, widget_key_prefix=widget_key_prefix)
+        if any(fw["task"].isin(EMO_TASKS)):
+            render_filler_emotion_by_task(fw)
+            render_filler_pvalues_emotion(fw, widget_key_prefix=widget_key_prefix)
+        render_filler_pvalues_situation(fw_sit, widget_key_prefix=widget_key_prefix)
 
     hits = {n: int(fw[f"_f_{n}"].sum()) for n in ALL_FILLER_NAMES}
     inv_df = pd.DataFrame(

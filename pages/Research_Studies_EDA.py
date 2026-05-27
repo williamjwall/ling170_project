@@ -34,6 +34,8 @@ from streamlit_app import (
     render_filler_female_male,
     render_filler_insights_emotion,
     render_filler_insights_phone_fm,
+    render_filler_pvalues_emotion,
+    render_filler_pvalues_sex,
 )
 
 RESEARCH_EXPORTS = REPO_ROOT / "ucla_box_parsed" / "research_exports"
@@ -228,6 +230,8 @@ def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: 
     m2.metric("Words", f"{total_words:,}")
     render_filler_emotion_by_task(fw_display)
     render_filler_insights_emotion(fw_display)
+    with st.expander("Statistical checks (p-values)", expanded=True):
+        render_filler_pvalues_emotion(fw_display, widget_key_prefix=f"{widget_key_prefix}emo_")
 
     with st.expander("Export full cohort to disk", expanded=False):
         st.caption(
@@ -296,6 +300,8 @@ def render_filler_tab_phone_sex_only(f_base: pd.DataFrame, *, widget_key_prefix:
     m3.metric("Total filler hits", f"{total_hits:,}")
     render_filler_female_male(fw_display, compact_caption=True)
     render_filler_insights_phone_fm(fw_display)
+    with st.expander("Statistical checks (p-values)", expanded=True):
+        render_filler_pvalues_sex(fw_display, widget_key_prefix=f"{widget_key_prefix}ph_")
 
     with st.expander("Export full cohort to disk", expanded=False):
         st.caption(
