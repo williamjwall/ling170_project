@@ -18,6 +18,13 @@ from filler_lexicon import (
     ordered_fillers,
     transcript_highlight_html,
 )
+from simple_stats import compare_metrics_in_dataframe
+from stats_display import (
+    pvalue_help_expander,
+    render_metrics_results_table,
+    render_multi_group_block,
+    render_two_group_block,
+)
 
 DEFAULT_CSV = Path(__file__).resolve().parent / "emotion_phone_simplified.csv"
 PHONE = "phonecall"
@@ -112,8 +119,130 @@ def reading_guide() -> None:
 - **Box plots** show the middle of the pack (the box), the typical spread, and dots that sit far from the rest.
 - **Bar charts** show the **average** for a group. If two bars are close, the groups are similar; if they are far apart, the difference is easier to see.
 - **Fillers per 100 words** = a fair way to compare short vs long recordings (similar to “per minute” instead of raw totals).
+- **p-values** compare groups on those per-file scores. **p < 0.05** means the gap is unlikely to be only random luck in this sample.
             """
         )
+
+
+def stats_metrics_for_tabs(data: pd.DataFrame, use_rate: bool) -> list[str]:
+    cols = [y_total(use_rate)]
+    cols.extend(category_rate_cols() if use_rate else category_count_cols())
+    cols.extend(filler_metric_cols(data, use_rate))
+    return [c for c in cols if c in data.columns]
+
+
+def stats_metric_labels(use_rate: bool) -> dict[str, str]:
+    labels = {
+        y_total(use_rate): "All fillers (per 100 words)"
+        if use_rate
+        else "All fillers (count)"
+    }
+    for cat in CATEGORY_LABELS:
+        key = f"rate {cat}" if use_rate else f"n {cat}"
+        labels[key] = cat
+    for w in ordered_fillers():
+        key = f"rate {w}" if use_rate else f"n {w}"
+        labels[key] = display_phrase(w)
+    return labels
+
+
+def category_and_share_metrics(data: pd.DataFrame, use_rate: bool) -> list[str]:
+    cols = list(category_cols(use_rate))
+    cols.extend(f"share {c}" for c in CATEGORY_LABELS)
+    return [c for c in cols if c in data.columns]
+
+
+def render_phone_pvalues(
+    phone: pd.DataFrame,
+    use_rate: bool,
+    *,
+    metrics: list[str] | None = None,
+    section_title: str = "Are male and female different? (p-values)",
+    help_key: str = "phone_p",
+) -> None:
+    sub = phone[phone["words"] > 0]
+    if sub.empty:
+        return
+    metric_list = metrics if metrics is not None else stats_metrics_for_tabs(sub, use_rate)
+    if not metric_list:
+        return
+    st.markdown("---")
+    st.subheader(section_title)
+    pvalue_help_expander(key=help_key)
+    ycol = y_total(use_rate)
+    labels = stats_metric_labels(use_rate)
+    table_metrics = list(metric_list)
+    if ycol in metric_list:
+        render_two_group_block(
+            sub,
+            "info_sex",
+            ycol,
+            label_a="Female",
+            label_b="Male",
+            code_a="F",
+            code_b="M",
+            metric_name=labels[ycol],
+            title="Headline check: all fillers on the phone",
+        )
+        table_metrics = [m for m in table_metrics if m != ycol]
+    results = compare_metrics_in_dataframe(
+        sub,
+        "info_sex",
+        table_metrics,
+        group_order=["F", "M"],
+        metric_labels=labels,
+        group_labels={"F": "Female", "M": "Male"},
+    )
+    render_metrics_results_table(
+        results,
+        caption="Mann-Whitney U on each recording’s score. “Worth mentioning?” uses p < 0.05.",
+    )
+
+
+def render_emotion_pvalues(
+    emotion: pd.DataFrame,
+    use_rate: bool,
+    *,
+    metrics: list[str] | None = None,
+    section_title: str = "Do story types differ? (p-values)",
+    help_key: str = "emotion_p",
+) -> None:
+    sub = emotion[emotion["words"] > 0]
+    if sub.empty:
+        return
+    metric_list = metrics if metrics is not None else stats_metrics_for_tabs(sub, use_rate)
+    if not metric_list:
+        return
+    task_labels = {t: story_label(t) for t in EMOTIONS}
+    st.markdown("---")
+    st.subheader(section_title)
+    pvalue_help_expander(key=help_key)
+    ycol = y_total(use_rate)
+    labels = stats_metric_labels(use_rate)
+    table_metrics = list(metric_list)
+    if ycol in metric_list:
+        render_multi_group_block(
+            sub,
+            "task",
+            ycol,
+            group_order=list(EMOTIONS),
+            group_labels=task_labels,
+            metric_name=labels[ycol],
+            title="Headline check: all fillers across story types",
+        )
+        table_metrics = [m for m in table_metrics if m != ycol]
+    results = compare_metrics_in_dataframe(
+        sub,
+        "task",
+        table_metrics,
+        group_order=list(EMOTIONS),
+        metric_labels=labels,
+        group_labels=task_labels,
+    )
+    render_metrics_results_table(
+        results,
+        caption="Kruskal-Wallis for three story types; Mann-Whitney if only two appear in the data.",
+    )
 
 
 def simple_summary(data: pd.DataFrame, group_col: str, value_col: str) -> pd.DataFrame:
@@ -503,6 +632,13 @@ def render_question3(phone: pd.DataFrame, use_rate: bool) -> None:
         fig_mean_bars(d, "info_sex", ccol, f"Average {pick} — male vs female", order=["F", "M"]),
         use_container_width=True,
     )
+    render_phone_pvalues(
+        phone,
+        use_rate,
+        metrics=category_and_share_metrics(d, use_rate),
+        section_title="p-values for the three filler types (phone)",
+        help_key="phone_cat_p",
+    )
 
 
 def render_question4(emotion: pd.DataFrame, use_rate: bool) -> None:
@@ -562,6 +698,13 @@ def render_question4(emotion: pd.DataFrame, use_rate: bool) -> None:
         ),
         use_container_width=True,
     )
+    render_emotion_pvalues(
+        emotion,
+        use_rate,
+        metrics=category_and_share_metrics(d, use_rate),
+        section_title="p-values for the three filler types (emotion stories)",
+        help_key="emotion_cat_p",
+    )
 
 
 def render_question1(phone: pd.DataFrame, use_rate: bool, ycol: str) -> None:
@@ -600,6 +743,7 @@ def render_question1(phone: pd.DataFrame, use_rate: bool, ycol: str) -> None:
 
     st.subheader("Summary")
     show_summary_table(simple_summary(phone, "info_sex", ycol), {"M": "Male", "F": "Female"})
+    render_phone_pvalues(phone, use_rate)
 
     st.subheader("Which filler words show up most on the phone?")
     st.plotly_chart(
@@ -665,6 +809,7 @@ def render_question2(emotion: pd.DataFrame, use_rate: bool, ycol: str) -> None:
         simple_summary(emotion, "task", ycol),
         {t: story_label(t) for t in EMOTIONS},
     )
+    render_emotion_pvalues(emotion, use_rate)
     st.markdown("**Quick look — average for each story type**")
     st.dataframe(averages_by_story_table(emotion, ycol), use_container_width=True, hide_index=True)
 
@@ -738,8 +883,8 @@ def main() -> None:
 
     st.title("Filler Words at UCLA, 18 to 24 year olds")
     st.write(
-        "This tool **counts filler words** in each recording and shows **simple charts** for your four research questions. "
-        "There are no statistical tests — just averages and pictures you can talk through in a presentation."
+        "This tool **counts filler words** in each recording, shows charts for your four research questions, "
+        "and runs **p-value checks** so you can see whether group differences are likely more than random noise."
     )
     st.caption(f"{len(df)} recordings loaded (male and female speakers).")
 

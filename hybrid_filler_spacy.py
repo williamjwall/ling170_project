@@ -147,6 +147,11 @@ _SO_INTENSIFIER_NEXT = frozenset({
     "sad", "mad", "funny", "weird", "hard", "easy", "fast", "slow", "big", "small",
     "young", "old", "hot", "cold", "loud", "quiet", "scary", "nice", "great", "awful",
     "pretty", "really", "very", "much", "many", "few", "little", "long", "far",
+    # degree *so* + adjective (not discourse filler)
+    "boring", "exciting", "excited", "interesting", "annoying", "disappointing",
+    "amazing", "stupid", "crazy", "fun", "dumb", "lame", "awkward", "embarrassing",
+    "painful", "helpful", "important", "different", "similar", "familiar", "strange",
+    "surprising", "confusing", "frustrating", "depressing", "exhausting", "overwhelming",
 })
 _FILLER_LABEL = {"like": "filtered_like", "well": "filtered_well", "so": "filtered_so"}
 _RE_AMBIGUOUS_WORD = re.compile(r"\b(like|well|so)\b", re.I)
@@ -170,6 +175,32 @@ def _preceded_by_as(text: str, start: int) -> bool:
 def _next_word_after(text: str, end: int) -> str:
     m = re.match(r"\s+([A-Za-z'+]+)", text[end:])
     return m.group(1).lower() if m else ""
+
+
+def _word_is_degree_target(word: str) -> bool:
+    """True when *so* is likely a degree modifier (so boring), not discourse filler."""
+    w = (word or "").lower().strip(".,!?;:\"'-")
+    if not w:
+        return False
+    if w in _SO_INTENSIFIER_NEXT or w in _INTENSIFIER_SO_HEADS:
+        return True
+    if len(w) > 4 and w.endswith(("ing", "ed", "ful", "ous", "ive", "ical", "less", "est")):
+        return True
+    return False
+
+
+def so_is_degree_modifier(text: str, start: int, end: int) -> bool:
+    """Whether *so* at [start:end] intensifies an adjective (exclude from filler counts)."""
+    nxt = _next_word_after(text, end)
+    if _word_is_degree_target(nxt):
+        return True
+    left = text[:start].rstrip().lower()
+    if re.search(
+        r"\b(was|were|is|are|am|be|been|being|feel|felt|seem|seemed|looks?|sounds?)\s+$",
+        left,
+    ):
+        return _word_is_degree_target(nxt)
+    return False
 
 
 def hybrid_classify_tags(
@@ -212,8 +243,7 @@ def hybrid_classify_tags(
             return True
         if pos in ("CCONJ", "SCONJ"):
             return False
-        nxt = _next_word_after(text, end)
-        if nxt in _INTENSIFIER_SO_HEADS or nxt in _SO_INTENSIFIER_NEXT or head in _SO_INTENSIFIER_NEXT:
+        if so_is_degree_modifier(text, start, end) or _word_is_degree_target(head):
             return False
         if pos == "ADV" and dep == "advmod":
             if _at_discourse_boundary(text, start):
@@ -284,6 +314,8 @@ def _heuristic_unparsed_filler(lemma: str, text: str, start: int, end: int) -> b
     if lem == "well" and _preceded_by_as(text, start):
         return False
     if lem == "so":
+        if so_is_degree_modifier(text, start, end):
+            return False
         after = text[end : end + 12].lower()
         if re.match(r"\s+far\b", after):
             return False
