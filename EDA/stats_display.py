@@ -105,3 +105,9 @@ def render_metrics_results_table(results: list[CompareResult], *, caption: str =
     if caption:
         st.caption(caption)
     st.dataframe(results_to_table(results), use_container_width=True, hide_index=True)
+
+
+def render_discussion_section(title: str, body: str, *, key: str) -> None:
+    """Discussion-style interpretation (not a duplicate of Results)."""
+    with st.expander(title, expanded=False, key=key):
+        st.markdown(body)

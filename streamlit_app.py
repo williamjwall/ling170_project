@@ -23,9 +23,21 @@ if str(_EDA_DIR) not in sys.path:
 from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
     pvalue_help_expander,
+    render_discussion_section,
     render_metrics_results_table,
     render_multi_group_block,
     render_two_group_block,
+)
+from discussion import (
+    NEXT_EMOTION,
+    NEXT_GENDER,
+    NEXT_SITUATION,
+    PRIOR_EMOTION,
+    PRIOR_GENDER,
+    PRIOR_SITUATION,
+    _means,
+    discussion_many_groups,
+    discussion_two_groups,
 )
 # Fixed corpus path (orthographic rows + hybrid columns). Regenerate offline only.
 CORPUS_CSV = REPO_ROOT / "ucla_box_parsed" / "ucla_text_state_parsed_with_hybrid.csv"
@@ -736,7 +748,7 @@ def render_filler_pvalues_sex(fw: pd.DataFrame, *, widget_key_prefix: str = "") 
     metric_cols, metric_labels = _filler_rate_metric_cols(work)
     st.markdown("##### Female vs male · p-values")
     pvalue_help_expander(key=f"{widget_key_prefix}p_sex")
-    render_two_group_block(
+    headline = render_two_group_block(
         work.assign(info_sex=work["_sx"]),
         "info_sex",
         "_filler_per100",
@@ -760,6 +772,20 @@ def render_filler_pvalues_sex(fw: pd.DataFrame, *, widget_key_prefix: str = "") 
         results,
         caption="Mann-Whitney U on each recording’s rate. “Worth mentioning?” = p < 0.05.",
     )
+    all_results = [headline] + list(results)
+    render_discussion_section(
+        "Discuss findings and implications",
+        discussion_two_groups(
+            topic="this filtered slice (female vs male)",
+            hypothesis="We expected measurable gender differences in filler use when comparing female and male speakers under the current filters.",
+            headline=headline,
+            all_results=all_results,
+            means=_means(work, "_sx", "_filler_per100", {"F": "Female", "M": "Male"}),
+            prior_work=PRIOR_GENDER,
+            next_steps=NEXT_GENDER,
+        ),
+        key=f"{widget_key_prefix}disc_sex",
+    )
 
 
 def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
@@ -773,8 +799,9 @@ def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = 
     task_labels = {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
     st.markdown("##### Emotion tasks · p-values")
     pvalue_help_expander(key=f"{widget_key_prefix}p_emo")
+    headline = None
     if len(present) >= 3:
-        render_multi_group_block(
+        headline = render_multi_group_block(
             work,
             "task",
             "_filler_per100",
@@ -794,7 +821,7 @@ def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = 
         )
     else:
         t0, t1 = present[0], present[1]
-        render_two_group_block(
+        headline = render_two_group_block(
             work,
             "task",
             "_filler_per100",
@@ -813,6 +840,21 @@ def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = 
             group_labels=task_labels,
         )
     render_metrics_results_table(results)
+    all_results = ([headline] if headline else []) + list(results)
+    emo_mean_labels = {t: task_labels[t] for t in present}
+    render_discussion_section(
+        "Discuss findings and implications",
+        discussion_many_groups(
+            topic="neutral, happy, and annoyed retellings",
+            hypothesis="We expected filler use to change when speakers retell conversations framed as neutral, happy, or annoyed.",
+            headline=headline,
+            all_results=all_results,
+            means=_means(work, "task", "_filler_per100", emo_mean_labels),
+            prior_work=PRIOR_EMOTION,
+            next_steps=NEXT_EMOTION,
+        ),
+        key=f"{widget_key_prefix}disc_emo",
+    )
 
 
 def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str = "") -> None:
@@ -828,8 +870,9 @@ def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str 
     sit_labels = {c: EDA_CATEGORY_LABEL.get(c, c) for c in cats}
     st.markdown("##### Situation · p-values")
     pvalue_help_expander(key=f"{widget_key_prefix}p_sit")
+    headline = None
     if len(cats) >= 3:
-        render_multi_group_block(
+        headline = render_multi_group_block(
             work,
             "_eda_category",
             "_filler_per100",
@@ -839,7 +882,7 @@ def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str 
             title="Headline: all fillers across situations",
         )
     else:
-        render_two_group_block(
+        headline = render_two_group_block(
             work,
             "_eda_category",
             "_filler_per100",
@@ -859,6 +902,22 @@ def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str 
         group_labels=sit_labels,
     )
     render_metrics_results_table(results, caption="Kruskal-Wallis by situation (per-file rates).")
+    all_results = ([headline] if headline else []) + list(results)
+    sit_mean_labels = {c: sit_labels[c] for c in cats}
+    disc_fn = discussion_many_groups if len(cats) >= 3 else discussion_two_groups
+    render_discussion_section(
+        "Discuss findings and implications",
+        disc_fn(
+            topic="speech situations (read-aloud, monologue, phone, etc.)",
+            hypothesis="We expected filler rates to differ by elicitation situation because planning load and audience differ across tasks.",
+            headline=headline,
+            all_results=all_results,
+            means=_means(work, "_eda_category", "_filler_per100", sit_mean_labels),
+            prior_work=PRIOR_SITUATION,
+            next_steps=NEXT_SITUATION,
+        ),
+        key=f"{widget_key_prefix}disc_sit",
+    )
 
 
 def render_filler_emotion_by_task(fw: pd.DataFrame, *, emotion_order: Tuple[str, ...] = ("neutral", "happy", "annoyed")) -> None:

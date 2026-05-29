@@ -21,9 +21,21 @@ from filler_lexicon import (
 from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
     pvalue_help_expander,
+    render_discussion_section,
     render_metrics_results_table,
     render_multi_group_block,
     render_two_group_block,
+)
+from discussion import (
+    NEXT_EMOTION,
+    NEXT_GENDER,
+    NEXT_SITUATION,
+    PRIOR_EMOTION,
+    PRIOR_GENDER,
+    PRIOR_SITUATION,
+    _means,
+    discussion_many_groups,
+    discussion_two_groups,
 )
 
 DEFAULT_CSV = Path(__file__).resolve().parent / "emotion_phone_simplified.csv"
@@ -172,8 +184,9 @@ def render_phone_pvalues(
     ycol = y_total(use_rate)
     labels = stats_metric_labels(use_rate)
     table_metrics = list(metric_list)
+    headline_result = None
     if ycol in metric_list:
-        render_two_group_block(
+        headline_result = render_two_group_block(
             sub,
             "info_sex",
             ycol,
@@ -196,6 +209,26 @@ def render_phone_pvalues(
     render_metrics_results_table(
         results,
         caption="Mann-Whitney U on each recording’s score. “Worth mentioning?” uses p < 0.05.",
+    )
+    all_results = ([headline_result] if headline_result else []) + list(results)
+    cat_focus = "category" in section_title.lower() or "three filler" in section_title.lower()
+    hyp = (
+        "We expected female and male speakers to differ in how much they use **placeholders, Californese, or feedback** fillers on phone calls."
+        if cat_focus
+        else "We expected female and male speakers to differ in overall filler use during spontaneous phone calls."
+    )
+    render_discussion_section(
+        "Discuss findings and implications",
+        discussion_two_groups(
+            topic="phone calls (female vs male)",
+            hypothesis=hyp,
+            headline=headline_result,
+            all_results=all_results,
+            means=_means(sub, "info_sex", ycol, {"F": "Female", "M": "Male"}),
+            prior_work=PRIOR_GENDER,
+            next_steps=NEXT_GENDER,
+        ),
+        key=f"{help_key}_disc",
     )
 
 
@@ -220,8 +253,9 @@ def render_emotion_pvalues(
     ycol = y_total(use_rate)
     labels = stats_metric_labels(use_rate)
     table_metrics = list(metric_list)
+    headline_result = None
     if ycol in metric_list:
-        render_multi_group_block(
+        headline_result = render_multi_group_block(
             sub,
             "task",
             ycol,
@@ -242,6 +276,26 @@ def render_emotion_pvalues(
     render_metrics_results_table(
         results,
         caption="Kruskal-Wallis for three story types; Mann-Whitney if only two appear in the data.",
+    )
+    all_results = ([headline_result] if headline_result else []) + list(results)
+    cat_focus = "category" in section_title.lower() or "three filler" in section_title.lower()
+    hyp = (
+        "We expected annoyed, happy, and neutral retellings to differ in **which filler categories** speakers rely on, even if total filler rate stays similar."
+        if cat_focus
+        else "We expected filler use to shift when speakers retell neutral vs happy vs annoyed conversations."
+    )
+    render_discussion_section(
+        "Discuss findings and implications",
+        discussion_many_groups(
+            topic="neutral, happy, and annoyed story retellings",
+            hypothesis=hyp,
+            headline=headline_result,
+            all_results=all_results,
+            means=_means(sub, "task", ycol, task_labels),
+            prior_work=PRIOR_EMOTION,
+            next_steps=NEXT_EMOTION,
+        ),
+        key=f"{help_key}_disc",
     )
 
 
