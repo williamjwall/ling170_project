@@ -26,6 +26,7 @@ from simple_stats import (
     format_p,
     metric_label,
 )
+from stats_display import _style_pairwise_table
 
 PHONE = "phonecall"
 EMO_TASKS = ("neutral", "happy", "annoyed")
@@ -319,6 +320,97 @@ def fig_emotion_heatmap(emotion: pd.DataFrame, top_n: int = 10) -> go.Figure | N
     return fig
 
 
+def fig_emotion_top_grouped(emotion: pd.DataFrame, top_n: int = 8) -> go.Figure | None:
+    """Grouped bars: top fillers × story type."""
+    sub = emotion.loc[emotion["task"].isin(EMO_TASKS) & (emotion["words"] > 0)]
+    cols = [f"rate {w}" for w in ordered_fillers() if f"rate {w}" in sub.columns]
+    if not cols:
+        return None
+    overall = sub[cols].mean().sort_values(ascending=False).head(top_n).index
+    rows = []
+    for t in EMO_TASKS:
+        g = sub.loc[sub["task"] == t]
+        if len(g) == 0:
+            continue
+        for c in overall:
+            w = c.replace("rate ", "")
+            label = "I mean" if w == "i mean" else w
+            rows.append({"Story": EMO_LABELS[t], "Filler": label, "Rate": _mean_rate(g, c)})
+    df = pd.DataFrame(rows)
+    fig = px.bar(
+        df,
+        x="Story",
+        y="Rate",
+        color="Filler",
+        barmode="group",
+        category_orders={"Story": ["Neutral", "Happy", "Annoyed"]},
+        title=f"Top {top_n} fillers by story (average per 100 words)",
+        labels={"Rate": "Per 100 words"},
+        color_discrete_sequence=px.colors.qualitative.Bold,
+    )
+    fig.update_layout(template="plotly_white", height=440, legend=dict(orientation="h", y=-0.25))
+    return fig
+
+
+def fig_emotion_category_heatmap(emotion: pd.DataFrame) -> go.Figure | None:
+    sub = emotion.loc[emotion["task"].isin(EMO_TASKS) & (emotion["words"] > 0)]
+    rows = []
+    for cat in CATEGORY_LABELS:
+        col = f"rate {cat}"
+        if col not in sub.columns:
+            continue
+        for t in EMO_TASKS:
+            g = sub.loc[sub["task"] == t]
+            if len(g):
+                rows.append({"Story": EMO_LABELS[t], "Type": cat, "Rate": _mean_rate(g, col)})
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    piv = df.pivot(index="Type", columns="Story", values="Rate")
+    piv = piv[["Neutral", "Happy", "Annoyed"]]
+    fig = px.imshow(
+        piv.values,
+        x=piv.columns,
+        y=piv.index,
+        color_continuous_scale="Blues",
+        title="Filler type intensity by emotion story (darker = more)",
+        labels=dict(color="Per 100 words"),
+        aspect="auto",
+    )
+    fig.update_layout(template="plotly_white", height=280)
+    return fig
+
+
+def fig_emotion_lines_top(emotion: pd.DataFrame, top_n: int = 6) -> go.Figure | None:
+    sub = emotion.loc[emotion["task"].isin(EMO_TASKS) & (emotion["words"] > 0)]
+    cols = [f"rate {w}" for w in ordered_fillers() if f"rate {w}" in sub.columns]
+    if not cols:
+        return None
+    top_cols = sub[cols].mean().sort_values(ascending=False).head(top_n).index
+    rows = []
+    for c in top_cols:
+        w = c.replace("rate ", "")
+        label = "I mean" if w == "i mean" else w
+        for t in EMO_TASKS:
+            g = sub.loc[sub["task"] == t]
+            if len(g):
+                rows.append({"Story": EMO_LABELS[t], "Filler": label, "Rate": _mean_rate(g, c)})
+    df = pd.DataFrame(rows)
+    fig = px.line(
+        df,
+        x="Story",
+        y="Rate",
+        color="Filler",
+        markers=True,
+        category_orders={"Story": ["Neutral", "Happy", "Annoyed"]},
+        title="How top fillers move across neutral → happy → annoyed",
+        labels={"Rate": "Per 100 words"},
+        color_discrete_sequence=px.colors.qualitative.Vivid,
+    )
+    fig.update_layout(template="plotly_white", height=400)
+    return fig
+
+
 def fig_emotion_categories(emotion: pd.DataFrame) -> go.Figure:
     sub = emotion.loc[emotion["task"].isin(EMO_TASKS) & (emotion["words"] > 0)]
     rows = []
@@ -357,31 +449,91 @@ def _hypothesis_verdict_card(title: str, question: str, supported: str | None, d
         st.info(detail)
 
 
-def render_research_findings_tab(
-    phone: pd.DataFrame,
-    emotion: pd.DataFrame,
-    *,
-    cohort_note: str = "Ages 18–24 · UCLA Speaker Variability corpus",
-) -> None:
-    """Full Research Findings tab content."""
-    st.header("Research findings")
-    st.caption(cohort_note)
-    st.markdown(
-        "Summary of **four hypotheses** from this study, plus the **interesting** statistically flagged results. "
-        "Charts use **fillers per 100 words** (one dot = one recording)."
+def _render_emotion_hypotheses(emotion: pd.DataFrame, *, featured: bool = False) -> None:
+    sub_e = emotion.loc[emotion["task"].isin(EMO_TASKS)]
+    groups = {
+        EMO_LABELS[t]: sub_e.loc[sub_e["task"] == t, "rate total"]
+        for t in EMO_TASKS
+        if (sub_e["task"] == t).any()
+    }
+    h2 = compare_many_groups(groups, metric="all fillers", pairwise=True) if len(groups) >= 2 else None
+    tm = _task_means(sub_e, "rate total")
+    if h2 and h2.significant:
+        h2_detail = (
+            f"**Supported (overall).** Filler rate differs across story types "
+            f"(p = {format_p(h2.p_value)})."
+        )
+        h2_status = "yes"
+    else:
+        h2_detail = (
+            f"**Partial / mix story.** Totals look similar (p = {format_p(h2.p_value) if h2 else 'n/a'}): "
+            f"{', '.join(f'{k} {v:.1f}' for k, v in tm.items())} per 100 words. "
+            "The interesting part is **which words** change — *um*, *you know*, *like*, etc."
+        )
+        h2_status = "partial"
+    _hypothesis_verdict_card(
+        "Hypothesis 2 · Emotion stories",
+        "Do people use more or fewer fillers when retelling neutral vs happy vs annoyed conversations?",
+        h2_status,
+        h2_detail,
     )
+    if featured:
+        st.plotly_chart(fig_emotion_totals(emotion), use_container_width=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            hm = fig_emotion_heatmap(emotion, top_n=12)
+            if hm:
+                st.plotly_chart(hm, use_container_width=True)
+        with c2:
+            ch = fig_emotion_category_heatmap(emotion)
+            if ch:
+                st.plotly_chart(ch, use_container_width=True)
+        grp = fig_emotion_top_grouped(emotion)
+        if grp:
+            st.plotly_chart(grp, use_container_width=True)
+        ln = fig_emotion_lines_top(emotion)
+        if ln:
+            st.plotly_chart(ln, use_container_width=True)
+    else:
+        c3, c4 = st.columns(2)
+        with c3:
+            st.plotly_chart(fig_emotion_totals(emotion), use_container_width=True)
+        with c4:
+            hm = fig_emotion_heatmap(emotion)
+            if hm:
+                st.plotly_chart(hm, use_container_width=True)
 
-    phone = phone.loc[phone["words"] > 0] if "words" in phone.columns else phone
-    emotion = emotion.loc[emotion["words"] > 0] if "words" in emotion.columns else emotion
+    h4_sig = any(
+        compare_many_groups(
+            {
+                EMO_LABELS[t]: sub_e.loc[sub_e["task"] == t, f"rate {cat}"]
+                for t in EMO_TASKS
+                if (sub_e["task"] == t).any()
+            },
+            metric=cat,
+        ).significant
+        for cat in CATEGORY_LABELS
+        if f"rate {cat}" in sub_e.columns
+    )
+    _hypothesis_verdict_card(
+        "Hypothesis 4 · Filler types × emotion",
+        "Do neutral, happy, and annoyed stories use different mixes of filler types?",
+        "yes" if h4_sig else "partial",
+        "**Supported.** Story type shifts which filler categories show up — often placeholders vs feedback phrases — "
+        "even when total filler counts stay flat."
+        if h4_sig
+        else "**Partial.** See category heatmap and grouped bars for where the action is.",
+    )
+    st.plotly_chart(fig_emotion_categories(emotion), use_container_width=True)
+    if h2 and h2.pairwise is not None and len(h2.pairwise):
+        st.markdown("**Pairwise emotion comparisons** (yellow rows = statistically notable)")
+        try:
+            st.dataframe(_style_pairwise_table(h2.pairwise), use_container_width=True, hide_index=True)
+        except Exception:
+            st.dataframe(h2.pairwise, use_container_width=True, hide_index=True)
 
-    st.markdown("### Highlights")
-    highlights = _highlight_bullets_phone(phone) + _highlight_bullets_emotion(emotion)
-    for h in highlights:
-        st.markdown(f"- {h}")
 
-    st.divider()
-
-    # --- H1 ---
+def _render_phone_hypotheses(phone: pd.DataFrame) -> None:
     sub_p = phone.loc[_sex_fm_mask(phone["info_sex"])]
     h1 = compare_two_groups(
         sub_p.loc[sub_p["info_sex"].str.upper() == "F", "rate total"],
@@ -420,43 +572,6 @@ def render_research_findings_tab(
             st.plotly_chart(gap, use_container_width=True)
 
     st.divider()
-
-    # --- H2 ---
-    sub_e = emotion.loc[emotion["task"].isin(EMO_TASKS)]
-    groups = {EMO_LABELS[t]: sub_e.loc[sub_e["task"] == t, "rate total"] for t in EMO_TASKS if (sub_e["task"] == t).any()}
-    h2 = compare_many_groups(groups, metric="all fillers") if len(groups) >= 2 else None
-    tm = _task_means(sub_e, "rate total")
-    if h2 and h2.significant:
-        h2_detail = (
-            f"**Supported (overall).** Filler rate differs across neutral, happy, and annoyed retellings "
-            f"(p = {format_p(h2.p_value)})."
-        )
-        h2_status = "yes"
-    else:
-        h2_detail = (
-            f"**Not supported (overall).** Total filler use is about the same across story types "
-            f"(p = {format_p(h2.p_value) if h2 else 'n/a'}). "
-            f"Averages: {', '.join(f'{k} {v:.1f}' for k, v in tm.items())}. "
-            "**Partial support:** specific words (e.g. *um*, *you know*) still differ — see heatmap."
-        )
-        h2_status = "partial"
-    _hypothesis_verdict_card(
-        "Hypothesis 2 · Emotion stories",
-        "Do people use more or fewer fillers when retelling neutral vs happy vs annoyed conversations?",
-        h2_status,
-        h2_detail,
-    )
-    c3, c4 = st.columns(2)
-    with c3:
-        st.plotly_chart(fig_emotion_totals(emotion), use_container_width=True)
-    with c4:
-        hm = fig_emotion_heatmap(emotion)
-        if hm:
-            st.plotly_chart(hm, use_container_width=True)
-
-    st.divider()
-
-    # --- H3 ---
     h3_sig = False
     for cat in CATEGORY_LABELS:
         col = f"rate {cat}"
@@ -485,27 +600,53 @@ def render_research_findings_tab(
     )
     st.plotly_chart(fig_gender_categories(phone), use_container_width=True)
 
-    st.divider()
 
-    # --- H4 ---
-    h4_sig = any(
-        compare_many_groups(
-            {EMO_LABELS[t]: sub_e.loc[sub_e["task"] == t, f"rate {cat}"] for t in EMO_TASKS if (sub_e["task"] == t).any()},
-            metric=cat,
-        ).significant
-        for cat in CATEGORY_LABELS
-        if f"rate {cat}" in sub_e.columns and len(EMO_TASKS) >= 2
+def render_research_findings_tab(
+    phone: pd.DataFrame,
+    emotion: pd.DataFrame,
+    *,
+    cohort_note: str = "Ages 18–24 · UCLA Speaker Variability corpus",
+    page_style: str = "default",
+) -> None:
+    """Full Research Findings content (EDA app or Research page)."""
+    st.header("Research findings")
+    st.caption(cohort_note)
+    st.markdown(
+        "Four hypotheses · **interesting** results (p below 0.05) · charts = fillers per 100 words (each dot = one recording)."
     )
-    _hypothesis_verdict_card(
-        "Hypothesis 4 · Filler types × emotion",
-        "Do neutral, happy, and annoyed stories use different mixes of filler types?",
-        "yes" if h4_sig else "partial",
-        "**Supported.** Story type changes which filler categories appear (often placeholders and feedback phrases), "
-        "even when total filler counts stay flat."
-        if h4_sig
-        else "**Partial.** Some category differences show up; lean on the heatmap and per-word tests.",
-    )
-    st.plotly_chart(fig_emotion_categories(emotion), use_container_width=True)
+
+    phone = phone.loc[phone["words"] > 0] if "words" in phone.columns else phone
+    emotion = emotion.loc[emotion["words"] > 0] if "words" in emotion.columns else emotion
+
+    emo_highlights = _highlight_bullets_emotion(emotion)
+    phone_highlights = _highlight_bullets_phone(phone)
+
+    if page_style == "research":
+        st.markdown("## Emotion stories — highlights")
+        st.caption("Neutral, happy, and annoyed retellings (main focus for this study).")
+        for h in emo_highlights:
+            st.markdown(f"- {h}")
+        if not emo_highlights:
+            st.info("No emotion highlights in this filter slice.")
+
+        st.markdown("## Emotion · hypotheses & charts")
+        _render_emotion_hypotheses(emotion, featured=True)
+
+        st.divider()
+        st.markdown("## Phone calls — highlights")
+        for h in phone_highlights:
+            st.markdown(f"- {h}")
+
+        st.markdown("## Phone · hypotheses & charts")
+        _render_phone_hypotheses(phone)
+    else:
+        st.markdown("### Highlights")
+        for h in emo_highlights + phone_highlights:
+            st.markdown(f"- {h}")
+        st.divider()
+        _render_phone_hypotheses(phone)
+        st.divider()
+        _render_emotion_hypotheses(emotion, featured=False)
 
     with st.expander("For your paper (Discussion vs Results)", expanded=False):
         st.markdown(
@@ -528,6 +669,7 @@ def render_research_findings_from_raw(
     age_max: int = 24,
     min_words: int = 20,
     cohort_note: str | None = None,
+    page_style: str = "research",
 ) -> None:
     """Build filler columns then render (streamlit_app / Research page)."""
     work = filter_study_cohort(df, age_min=age_min, age_max=age_max, min_words=0)
@@ -540,4 +682,4 @@ def render_research_findings_from_raw(
     phone = fw.loc[fw["task"].eq(PHONE)].copy()
     emotion = fw.loc[fw["task"].isin(EMO_TASKS)].copy()
     note = cohort_note or f"Ages {age_min}–{age_max} · filtered cohort"
-    render_research_findings_tab(phone, emotion, cohort_note=note)
+    render_research_findings_tab(phone, emotion, cohort_note=note, page_style=page_style)
