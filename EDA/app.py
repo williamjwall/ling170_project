@@ -20,6 +20,7 @@ from filler_lexicon import (
 )
 from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
+    build_metric_means,
     pvalue_help_expander,
     render_discussion_section,
     render_metrics_results_table,
@@ -206,19 +207,25 @@ def render_phone_pvalues(
         metric_labels=labels,
         group_labels={"F": "Female", "M": "Male"},
     )
+    sex_labels = {"F": "Female", "M": "Male"}
     render_metrics_results_table(
         results,
-        caption="Mann-Whitney U on each recording’s score. “Worth mentioning?” uses p < 0.05.",
+        caption="Mann-Whitney U test on each recording. Green rows = p below 0.05.",
+        headline=headline_result,
+        means=_means(sub, "info_sex", ycol, sex_labels) if ycol in sub.columns else None,
+        metric_means=build_metric_means(
+            sub, "info_sex", metric_list, group_labels=sex_labels, column_labels=labels
+        ),
     )
     all_results = ([headline_result] if headline_result else []) + list(results)
     cat_focus = "category" in section_title.lower() or "three filler" in section_title.lower()
     hyp = (
-        "We expected female and male speakers to differ in how much they use **placeholders, Californese, or feedback** fillers on phone calls."
+        "Do women and men use different **types** of fillers on phone calls (pauses vs *like* vs *you know*)?"
         if cat_focus
-        else "We expected female and male speakers to differ in overall filler use during spontaneous phone calls."
+        else "Do women and men use a different **amount** of fillers on phone calls?"
     )
     render_discussion_section(
-        "Discuss findings and implications",
+        "What does this mean? (plain English)",
         discussion_two_groups(
             topic="phone calls (female vs male)",
             hypothesis=hyp,
@@ -275,17 +282,23 @@ def render_emotion_pvalues(
     )
     render_metrics_results_table(
         results,
-        caption="Kruskal-Wallis for three story types; Mann-Whitney if only two appear in the data.",
+        caption="Kruskal-Wallis test across story types. Green rows = p below 0.05.",
+        headline=headline_result,
+        means=_means(sub, "task", ycol, task_labels) if ycol in sub.columns else None,
+        metric_means=build_metric_means(
+            sub, "task", metric_list, group_labels=task_labels, column_labels=labels
+        ),
+        pairwise=headline_result.pairwise if headline_result else None,
     )
     all_results = ([headline_result] if headline_result else []) + list(results)
     cat_focus = "category" in section_title.lower() or "three filler" in section_title.lower()
     hyp = (
-        "We expected annoyed, happy, and neutral retellings to differ in **which filler categories** speakers rely on, even if total filler rate stays similar."
+        "Do neutral, happy, and annoyed stories use different **kinds** of fillers?"
         if cat_focus
-        else "We expected filler use to shift when speakers retell neutral vs happy vs annoyed conversations."
+        else "Do people use more or fewer fillers when the story is neutral vs happy vs annoyed?"
     )
     render_discussion_section(
-        "Discuss findings and implications",
+        "What does this mean? (plain English)",
         discussion_many_groups(
             topic="neutral, happy, and annoyed story retellings",
             hypothesis=hyp,

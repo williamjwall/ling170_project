@@ -5,25 +5,152 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from simple_stats import CompareResult, compare_many_groups, compare_two_groups, results_to_table
+from simple_stats import (
+    CompareResult,
+    collect_significant,
+    compare_many_groups,
+    compare_two_groups,
+    format_p,
+    metric_label,
+    results_to_table,
+)
 
 
 def pvalue_help_expander(*, key: str = "p_help") -> None:
-    with st.expander("What does the p-value mean?", expanded=False):
+    with st.expander("What do these numbers mean?", expanded=False):
         st.markdown(
             """
-Each **dot** on the charts is **one recording**. We compare those scores with:
-
-- **Mann-Whitney U** when there are **two** groups (e.g. male vs female)
-- **Kruskal-Wallis** when there are **three or more** (e.g. neutral vs happy vs annoyed)
-
-**How to read p:** if **p < 0.05**, the difference is big enough that it is **unlikely to be only random luck**
-in this sample. That is worth mentioning in a paper or presentation. It is **not** proof the groups differ everywhere.
-
-When we test **many filler words at once**, a few small p-values can show up by chance. Lean on the **overall**
-and **category** rows first; use single-word rows as hints for what to look at next.
+- **Each row** = one person’s recording.
+- **Per 100 words** = fillers ÷ word count × 100 (fair for short vs long clips).
+- **p-value** — below **0.05** means the groups probably differ **more than random luck** would explain. It is **not** proof for all speakers everywhere.
+- **Mann-Whitney U** — compares **two** groups (e.g. female vs male).
+- **Kruskal-Wallis** — compares **three or more** groups (e.g. neutral vs happy vs annoyed).
+- **Worth mentioning?** — our simple yes/no for p below 0.05.
+- We test **many words** at once; treat the **overall / category** rows as the main story. Single-word rows are hints.
             """
         )
+
+
+def _direction_two_group(means: dict[str, float]) -> str:
+    if len(means) != 2:
+        return ""
+    hi = max(means, key=means.get)
+    lo = min(means, key=means.get)
+    return f" **{hi}** was higher ({means[hi]:.1f} vs {means[lo]:.1f} fillers per 100 words)."
+
+
+def _means_snapshot(means: dict[str, float]) -> str:
+    if len(means) < 2:
+        return ""
+    ordered = sorted(means.items(), key=lambda x: -x[1])
+    bits = ", ".join(f"{k} {v:.1f}" for k, v in ordered)
+    return f" Averages: {bits} (per 100 words)."
+
+
+def _finding_plain_line(r: CompareResult, means: dict[str, float] | None) -> str:
+    name = metric_label(r.comparison)
+    groups = r.comparison.split(" · ")[0].strip() if " · " in r.comparison else ""
+    p = format_p(r.p_value)
+    line = f"**{name}**"
+    if groups:
+        line += f" ({groups})"
+    line += f" — **p = {p}**"
+    if means:
+        if len(means) == 2:
+            line += _direction_two_group(means)
+        else:
+            line += _means_snapshot(means)
+    return line
+
+
+def _style_results_table(df: pd.DataFrame):
+    """Green highlight on rows worth mentioning."""
+
+    def _row_style(row: pd.Series):
+        if row.get("Worth mentioning?") == "Yes":
+            return ["background-color: #c8f5d0; color: #0a3d18; font-weight: 600"] * len(row)
+        return [""] * len(row)
+
+    return df.style.apply(_row_style, axis=1)
+
+
+def _style_pairwise_table(df: pd.DataFrame):
+    def _row_style(row: pd.Series):
+        if str(row.get("Significant?", "")).strip() == "Yes":
+            return ["background-color: #fff3cd; color: #5c4a00; font-weight: 600"] * len(row)
+        return [""] * len(row)
+
+    return df.style.apply(_row_style, axis=1)
+
+
+def build_metric_means(
+    df: pd.DataFrame,
+    group_col: str,
+    columns: list[str],
+    *,
+    group_labels: dict[str, str],
+    column_labels: dict[str, str],
+) -> dict[str, dict[str, float]]:
+    """Per-measure average by group (for highlight bullets)."""
+    out: dict[str, dict[str, float]] = {}
+    for col in columns:
+        if col not in df.columns:
+            continue
+        label = column_labels.get(col, col)
+        gm: dict[str, float] = {}
+        for code, lab in group_labels.items():
+            g = df.loc[df[group_col].astype(str).str.strip() == str(code), col]
+            g = pd.to_numeric(g, errors="coerce").dropna()
+            if len(g):
+                gm[lab] = float(g.mean())
+        if gm:
+            out[label] = gm
+    return out
+
+
+def render_significant_findings(
+    results: list[CompareResult],
+    *,
+    headline: CompareResult | None = None,
+    means: dict[str, float] | None = None,
+    pairwise: pd.DataFrame | None = None,
+    metric_means: dict[str, dict[str, float]] | None = None,
+) -> None:
+    """
+    Call out interesting results (p below 0.05) before the full table.
+
+    metric_means: optional per-measure group means, keyed by metric_label(comparison).
+    """
+    sig = collect_significant(results, headline=headline)
+    pw_sig: list[dict[str, object]] = []
+    if pairwise is not None and len(pairwise):
+        for _, row in pairwise.iterrows():
+            if str(row.get("Significant?", "")).strip() == "Yes":
+                pw_sig.append(row.to_dict())
+
+    if not sig and not pw_sig:
+        st.info(
+            "No **highlighted** findings here — nothing in this slice hit **p below 0.05**. "
+            "That can still be useful: it means groups look **similar** for these measures."
+        )
+        return
+
+    st.markdown("### Interesting findings (p below 0.05)")
+    st.caption("These are the rows worth talking about in your paper. Green rows in the table below match this list.")
+
+    for r in sig:
+        m = means
+        if metric_means:
+            m = metric_means.get(metric_label(r.comparison), means)
+        st.success(_finding_plain_line(r, m))
+
+    if pw_sig:
+        st.markdown("**Pairs that differ** (after adjusting for many comparisons):")
+        for row in pw_sig[:8]:
+            a = row.get("Group A", "?")
+            b = row.get("Group B", "?")
+            padj = row.get("p_adj", "—")
+            st.warning(f"**{a}** vs **{b}** — adjusted p = **{padj}**")
 
 
 def render_compare_result(result: CompareResult, *, title: str | None = None) -> None:
@@ -93,18 +220,44 @@ def render_multi_group_block(
     result = compare_many_groups(groups, metric=metric_name)
     render_compare_result(result, title=title or f"Main check: {metric_name}")
     if result.pairwise is not None and len(result.pairwise):
-        st.markdown("**Which pairs differ?** (Bonferroni adjusted p in `p_adj`)")
-        st.dataframe(result.pairwise, use_container_width=True, hide_index=True)
+        st.markdown("**Which pairs differ?** (`p_adj` = adjusted p so we do not over-count many pairs)")
+        st.dataframe(
+            _style_pairwise_table(result.pairwise),
+            use_container_width=True,
+            hide_index=True,
+        )
     return result
 
 
-def render_metrics_results_table(results: list[CompareResult], *, caption: str = "") -> None:
-    if not results:
+def render_metrics_results_table(
+    results: list[CompareResult],
+    *,
+    caption: str = "",
+    headline: CompareResult | None = None,
+    means: dict[str, float] | None = None,
+    pairwise: pd.DataFrame | None = None,
+    metric_means: dict[str, dict[str, float]] | None = None,
+) -> None:
+    if not results and not headline:
         return
-    st.markdown("**Every measure on this tab**")
+    render_significant_findings(
+        results,
+        headline=headline,
+        means=means,
+        pairwise=pairwise,
+        metric_means=metric_means,
+    )
+    st.markdown("**Full table** (green rows = interesting)")
     if caption:
         st.caption(caption)
-    st.dataframe(results_to_table(results), use_container_width=True, hide_index=True)
+    tbl = results_to_table(results)
+    if len(tbl):
+        try:
+            st.dataframe(_style_results_table(tbl), use_container_width=True, hide_index=True)
+        except Exception:
+            st.dataframe(tbl, use_container_width=True, hide_index=True)
+    else:
+        st.caption("—")
 
 
 def render_discussion_section(title: str, body: str, *, key: str) -> None:

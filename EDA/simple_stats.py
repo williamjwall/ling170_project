@@ -31,12 +31,12 @@ class CompareResult:
         p = self.p_value
         if p < alpha:
             return (
-                f"p = {format_p(p)} — groups look different enough that this is probably "
-                f"not just random luck (we use p < {alpha:g} as our cutoff)."
+                f"p = {format_p(p)} — groups probably differ (not just luck). "
+                f"We flag anything below p = {alpha:g}."
             )
         return (
-            f"p = {format_p(p)} — the gap could easily be random noise "
-            f"(not under p < {alpha:g})."
+            f"p = {format_p(p)} — groups look similar; could be random noise "
+            f"(above p = {alpha:g})."
         )
 
 
@@ -183,6 +183,31 @@ def compare_metrics_in_dataframe(
         elif len(by_group) >= 3:
             results.append(compare_many_groups(by_group, metric=label))
     return results
+
+
+def metric_label(comparison: str) -> str:
+    """Short name for a measure (last segment after ·)."""
+    if " · " in comparison:
+        return comparison.split(" · ")[-1].strip()
+    return comparison.strip()
+
+
+def collect_significant(
+    results: Sequence[CompareResult],
+    headline: CompareResult | None = None,
+) -> list[CompareResult]:
+    """Unique significant results, strongest (lowest p) first."""
+    seen: set[str] = set()
+    out: list[CompareResult] = []
+    for r in ([headline] if headline else []) + list(results):
+        if not r or not r.significant or r.p_value is None:
+            continue
+        if r.comparison in seen:
+            continue
+        seen.add(r.comparison)
+        out.append(r)
+    out.sort(key=lambda x: x.p_value or 1.0)
+    return out
 
 
 def results_to_table(results: list[CompareResult]) -> pd.DataFrame:

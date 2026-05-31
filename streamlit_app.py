@@ -22,6 +22,7 @@ if str(_EDA_DIR) not in sys.path:
 
 from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
+    build_metric_means,
     pvalue_help_expander,
     render_discussion_section,
     render_metrics_results_table,
@@ -768,16 +769,26 @@ def render_filler_pvalues_sex(fw: pd.DataFrame, *, widget_key_prefix: str = "") 
         metric_labels=metric_labels,
         group_labels={"F": "Female", "M": "Male"},
     )
+    sex_labels = {"F": "Female", "M": "Male"}
     render_metrics_results_table(
         results,
-        caption="Mann-Whitney U on each recording’s rate. “Worth mentioning?” = p < 0.05.",
+        caption="Green rows = p below 0.05 (worth mentioning).",
+        headline=headline,
+        means=_means(work, "_sx", "_filler_per100", sex_labels),
+        metric_means=build_metric_means(
+            work,
+            "_sx",
+            metric_cols,
+            group_labels=sex_labels,
+            column_labels=metric_labels,
+        ),
     )
     all_results = [headline] + list(results)
     render_discussion_section(
-        "Discuss findings and implications",
+        "What does this mean? (plain English)",
         discussion_two_groups(
             topic="this filtered slice (female vs male)",
-            hypothesis="We expected measurable gender differences in filler use when comparing female and male speakers under the current filters.",
+            hypothesis="Do women and men use fillers differently in the recordings you filtered to?",
             headline=headline,
             all_results=all_results,
             means=_means(work, "_sx", "_filler_per100", {"F": "Female", "M": "Male"}),
@@ -839,14 +850,27 @@ def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = 
             metric_labels=metric_labels,
             group_labels=task_labels,
         )
-    render_metrics_results_table(results)
-    all_results = ([headline] if headline else []) + list(results)
     emo_mean_labels = {t: task_labels[t] for t in present}
+    render_metrics_results_table(
+        results,
+        caption="Green rows = p below 0.05.",
+        headline=headline,
+        means=_means(work, "task", "_filler_per100", emo_mean_labels),
+        metric_means=build_metric_means(
+            work,
+            "task",
+            metric_cols,
+            group_labels=emo_mean_labels,
+            column_labels=metric_labels,
+        ),
+        pairwise=headline.pairwise if headline else None,
+    )
+    all_results = ([headline] if headline else []) + list(results)
     render_discussion_section(
-        "Discuss findings and implications",
+        "What does this mean? (plain English)",
         discussion_many_groups(
             topic="neutral, happy, and annoyed retellings",
-            hypothesis="We expected filler use to change when speakers retell conversations framed as neutral, happy, or annoyed.",
+            hypothesis="Do people fill more or less depending on whether the story is neutral, happy, or annoyed?",
             headline=headline,
             all_results=all_results,
             means=_means(work, "task", "_filler_per100", emo_mean_labels),
@@ -901,15 +925,28 @@ def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str 
         metric_labels=metric_labels,
         group_labels=sit_labels,
     )
-    render_metrics_results_table(results, caption="Kruskal-Wallis by situation (per-file rates).")
-    all_results = ([headline] if headline else []) + list(results)
     sit_mean_labels = {c: sit_labels[c] for c in cats}
+    render_metrics_results_table(
+        results,
+        caption="Green rows = p below 0.05.",
+        headline=headline,
+        means=_means(work, "_eda_category", "_filler_per100", sit_mean_labels),
+        metric_means=build_metric_means(
+            work,
+            "_eda_category",
+            metric_cols,
+            group_labels=sit_mean_labels,
+            column_labels=metric_labels,
+        ),
+        pairwise=headline.pairwise if headline else None,
+    )
+    all_results = ([headline] if headline else []) + list(results)
     disc_fn = discussion_many_groups if len(cats) >= 3 else discussion_two_groups
     render_discussion_section(
-        "Discuss findings and implications",
+        "What does this mean? (plain English)",
         disc_fn(
             topic="speech situations (read-aloud, monologue, phone, etc.)",
-            hypothesis="We expected filler rates to differ by elicitation situation because planning load and audience differ across tasks.",
+            hypothesis="Do filler rates change depending on the speech task (reading, talking to the researcher, phone call, etc.)?",
             headline=headline,
             all_results=all_results,
             means=_means(work, "_eda_category", "_filler_per100", sit_mean_labels),
