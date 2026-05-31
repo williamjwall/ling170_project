@@ -22,7 +22,6 @@ from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
     build_metric_means,
     pvalue_help_expander,
-    render_discussion_section,
     render_metrics_results_table,
     render_multi_group_block,
     render_two_group_block,
@@ -35,8 +34,7 @@ from discussion import (
     PRIOR_GENDER,
     PRIOR_SITUATION,
     _means,
-    discussion_many_groups,
-    discussion_two_groups,
+    render_plain_english,
 )
 
 DEFAULT_CSV = Path(__file__).resolve().parent / "emotion_phone_simplified.csv"
@@ -224,17 +222,15 @@ def render_phone_pvalues(
         if cat_focus
         else "Do women and men use a different **amount** of fillers on phone calls?"
     )
-    render_discussion_section(
-        "What does this mean? (plain English)",
-        discussion_two_groups(
-            topic="phone calls (female vs male)",
-            hypothesis=hyp,
-            headline=headline_result,
-            all_results=all_results,
-            means=_means(sub, "info_sex", ycol, {"F": "Female", "M": "Male"}),
-            prior_work=PRIOR_GENDER,
-            next_steps=NEXT_GENDER,
-        ),
+    render_plain_english(
+        hypothesis=hyp,
+        headline=headline_result,
+        all_results=all_results,
+        means=_means(sub, "info_sex", ycol, {"F": "Female", "M": "Male"}),
+        prior_work=PRIOR_GENDER,
+        next_steps=NEXT_GENDER,
+        topic="phone calls (female vs male)",
+        two_group=True,
         key=f"{help_key}_disc",
     )
 
@@ -297,17 +293,15 @@ def render_emotion_pvalues(
         if cat_focus
         else "Do people use more or fewer fillers when the story is neutral vs happy vs annoyed?"
     )
-    render_discussion_section(
-        "What does this mean? (plain English)",
-        discussion_many_groups(
-            topic="neutral, happy, and annoyed story retellings",
-            hypothesis=hyp,
-            headline=headline_result,
-            all_results=all_results,
-            means=_means(sub, "task", ycol, task_labels),
-            prior_work=PRIOR_EMOTION,
-            next_steps=NEXT_EMOTION,
-        ),
+    render_plain_english(
+        hypothesis=hyp,
+        headline=headline_result,
+        all_results=all_results,
+        means=_means(sub, "task", ycol, task_labels),
+        prior_work=PRIOR_EMOTION,
+        next_steps=NEXT_EMOTION,
+        topic="neutral, happy, and annoyed story retellings",
+        two_group=False,
         key=f"{help_key}_disc",
     )
 

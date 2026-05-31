@@ -24,7 +24,6 @@ from simple_stats import compare_metrics_in_dataframe
 from stats_display import (
     build_metric_means,
     pvalue_help_expander,
-    render_discussion_section,
     render_metrics_results_table,
     render_multi_group_block,
     render_two_group_block,
@@ -37,8 +36,7 @@ from discussion import (
     PRIOR_GENDER,
     PRIOR_SITUATION,
     _means,
-    discussion_many_groups,
-    discussion_two_groups,
+    render_plain_english,
 )
 # Fixed corpus path (orthographic rows + hybrid columns). Regenerate offline only.
 CORPUS_CSV = REPO_ROOT / "ucla_box_parsed" / "ucla_text_state_parsed_with_hybrid.csv"
@@ -784,17 +782,15 @@ def render_filler_pvalues_sex(fw: pd.DataFrame, *, widget_key_prefix: str = "") 
         ),
     )
     all_results = [headline] + list(results)
-    render_discussion_section(
-        "What does this mean? (plain English)",
-        discussion_two_groups(
-            topic="this filtered slice (female vs male)",
-            hypothesis="Do women and men use fillers differently in the recordings you filtered to?",
-            headline=headline,
-            all_results=all_results,
-            means=_means(work, "_sx", "_filler_per100", {"F": "Female", "M": "Male"}),
-            prior_work=PRIOR_GENDER,
-            next_steps=NEXT_GENDER,
-        ),
+    render_plain_english(
+        hypothesis="Do women and men use fillers differently in the recordings you filtered to?",
+        headline=headline,
+        all_results=all_results,
+        means=_means(work, "_sx", "_filler_per100", sex_labels),
+        prior_work=PRIOR_GENDER,
+        next_steps=NEXT_GENDER,
+        topic="this filtered slice (female vs male)",
+        two_group=True,
         key=f"{widget_key_prefix}disc_sex",
     )
 
@@ -866,17 +862,15 @@ def render_filler_pvalues_emotion(fw: pd.DataFrame, *, widget_key_prefix: str = 
         pairwise=headline.pairwise if headline else None,
     )
     all_results = ([headline] if headline else []) + list(results)
-    render_discussion_section(
-        "What does this mean? (plain English)",
-        discussion_many_groups(
-            topic="neutral, happy, and annoyed retellings",
-            hypothesis="Do people fill more or less depending on whether the story is neutral, happy, or annoyed?",
-            headline=headline,
-            all_results=all_results,
-            means=_means(work, "task", "_filler_per100", emo_mean_labels),
-            prior_work=PRIOR_EMOTION,
-            next_steps=NEXT_EMOTION,
-        ),
+    render_plain_english(
+        hypothesis="Do people fill more or less depending on whether the story is neutral, happy, or annoyed?",
+        headline=headline,
+        all_results=all_results,
+        means=_means(work, "task", "_filler_per100", emo_mean_labels),
+        prior_work=PRIOR_EMOTION,
+        next_steps=NEXT_EMOTION,
+        topic="neutral, happy, and annoyed retellings",
+        two_group=False,
         key=f"{widget_key_prefix}disc_emo",
     )
 
@@ -941,18 +935,15 @@ def render_filler_pvalues_situation(fw: pd.DataFrame, *, widget_key_prefix: str 
         pairwise=headline.pairwise if headline else None,
     )
     all_results = ([headline] if headline else []) + list(results)
-    disc_fn = discussion_many_groups if len(cats) >= 3 else discussion_two_groups
-    render_discussion_section(
-        "What does this mean? (plain English)",
-        disc_fn(
-            topic="speech situations (read-aloud, monologue, phone, etc.)",
-            hypothesis="Do filler rates change depending on the speech task (reading, talking to the researcher, phone call, etc.)?",
-            headline=headline,
-            all_results=all_results,
-            means=_means(work, "_eda_category", "_filler_per100", sit_mean_labels),
-            prior_work=PRIOR_SITUATION,
-            next_steps=NEXT_SITUATION,
-        ),
+    render_plain_english(
+        hypothesis="Do filler rates change depending on the speech task (reading, talking to the researcher, phone call, etc.)?",
+        headline=headline,
+        all_results=all_results,
+        means=_means(work, "_eda_category", "_filler_per100", sit_mean_labels),
+        prior_work=PRIOR_SITUATION,
+        next_steps=NEXT_SITUATION,
+        topic="speech situations (read-aloud, monologue, phone, etc.)",
+        two_group=len(cats) == 2,
         key=f"{widget_key_prefix}disc_sit",
     )
 

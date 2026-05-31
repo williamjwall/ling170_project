@@ -1,5 +1,5 @@
 """
-Simple discussion text from statistical results (for Streamlit).
+Plain-English interpretation below the p-value tables (Streamlit).
 """
 
 from __future__ import annotations
@@ -7,17 +7,9 @@ from __future__ import annotations
 from typing import Mapping, Sequence
 
 import pandas as pd
+import streamlit as st
 
-from simple_stats import CompareResult, format_p
-
-# Shown at the top of every discussion block (short glossary).
-TERMS_BOX = """
-**Quick terms**
-- **Filler** — words like *um*, *uh*, *like*, *you know* that do not add much new meaning; they pause, soften, or hold the floor.
-- **Per 100 words** — a fair way to compare a short clip and a long one (like “per minute” instead of raw counts).
-- **p-value** — if **p is below 0.05**, the gap between groups is **probably not just luck** in this sample. It is **not** proof everyone everywhere differs.
-- **Placeholders** — hesitation sounds (*um*, *uh*). **Californese** — discourse words (*like*, *so*). **Feedback** — listener checks (*you know*, *I mean*).
-"""
+from simple_stats import CompareResult, collect_significant, format_p, metric_label
 
 
 def _means(
@@ -41,184 +33,210 @@ def _higher_label(means: dict[str, float]) -> str | None:
     return max(means, key=means.get)
 
 
-def _sig_results(results: Sequence[CompareResult]) -> list[CompareResult]:
-    return [r for r in results if r.significant and r.p_value is not None]
-
-
-def _metric_short(comparison: str) -> str:
-    if " · " in comparison:
-        return comparison.split(" · ")[-1].strip()
-    return comparison
-
-
-def _sig_word_list(sig: Sequence[CompareResult], limit: int = 5) -> str:
-    names = [_metric_short(r.comparison) for r in sig[:limit]]
-    if not names:
-        return ""
-    text = ", ".join(f"*{n}*" for n in names)
-    if len(sig) > limit:
-        text += f", and {len(sig) - limit} more"
-    return text
-
-
-def discussion_two_groups(
+def render_plain_english(
     *,
-    topic: str,
     hypothesis: str,
     headline: CompareResult | None,
     all_results: Sequence[CompareResult],
     means: dict[str, float],
     prior_work: str,
     next_steps: str,
-) -> str:
-    sig = _sig_results(all_results)
-    if headline and headline.significant and headline not in sig:
-        sig = [headline] + sig
+    topic: str,
+    two_group: bool,
+    key: str,
+) -> None:
+    """Structured “What does this mean?” — ties to green highlights above."""
+    sig = collect_significant(list(all_results), headline=headline)
 
-    lines = [TERMS_BOX.strip(), f"**Our question.** {hypothesis}"]
+    with st.expander("What does this mean? (plain English)", expanded=False, key=key):
+        st.markdown(
+            "Use this after the **Interesting findings** and **green table rows** above. "
+            "Those show *what* differed; this section helps you say *what it means* for your thesis."
+        )
 
+        with st.expander("Words you might not know", expanded=False):
+            st.markdown(
+                """
+| Term | Meaning |
+|------|---------|
+| **Filler** | Words like *um*, *uh*, *like*, *you know* — pauses, softeners, or holding the floor |
+| **Per 100 words** | Fillers ÷ word count × 100 (fair for short vs long recordings) |
+| **p-value** | Below **0.05** → groups probably differ more than random luck in *this* sample (not proof everywhere) |
+| **Placeholders** | Hesitation: *um*, *uh*, *hmm* |
+| **Californese** | Discourse style: *like*, *so*, *basically* |
+| **Feedback** | Checking in with the listener: *you know*, *I mean*, *well* |
+                """
+            )
+
+        st.markdown("#### 1. Your question")
+        st.write(hypothesis)
+
+        st.markdown("#### 2. Bottom line")
+        _render_bottom_line(
+            headline=headline,
+            sig=sig,
+            means=means,
+            topic=topic,
+            two_group=two_group,
+        )
+
+        st.markdown("#### 3. Tie-in to the highlights above")
+        if sig:
+            st.markdown("The **green boxes** match these measures:")
+            for r in sig[:10]:
+                st.markdown(f"- **{metric_label(r.comparison)}** — p = {format_p(r.p_value)}")
+            if len(sig) > 10:
+                st.caption(f"…and {len(sig) - 10} more in the table.")
+        else:
+            st.info(
+                "Nothing was green above (no p below 0.05). "
+                "In your Discussion you can say groups looked **similar** on these tests for this slice."
+            )
+
+        st.markdown("#### 4. For your paper’s Discussion (not Results)")
+        _render_paper_guidance(
+            headline=headline,
+            sig=sig,
+            means=means,
+            two_group=two_group,
+        )
+
+        st.markdown("#### 5. Other studies")
+        st.write(prior_work)
+
+        st.markdown("#### 6. Limits and what to do next")
+        st.markdown(
+            """
+- One row = **one recording**, not one person’s whole life.
+- Counts use **pattern matching** on transcripts (*like* can include grammatical uses unless hybrid tagging is on).
+- Many tests at once → treat **overall / category** greens as main; single words are **follow-ups**.
+            """
+        )
+        st.write(next_steps)
+
+
+def _render_bottom_line(
+    *,
+    headline: CompareResult | None,
+    sig: list[CompareResult],
+    means: dict[str, float],
+    topic: str,
+    two_group: bool,
+) -> None:
     if headline and headline.p_value is not None:
         if headline.significant:
-            who = _higher_label(means)
-            if who and len(means) == 2:
-                other = [k for k in means if k != who][0]
-                lines.append(
-                    f"**Main answer.** Yes — for {topic}, the groups differ overall "
-                    f"(p = {format_p(headline.p_value)}). "
-                    f"**{who}** averaged **{means[who]:.1f}** fillers per 100 words vs "
-                    f"**{means[other]:.1f}** for **{other}**."
+            if two_group and len(means) == 2:
+                who = _higher_label(means)
+                other = [k for k in means if k != who][0] if who else None
+                extra = (
+                    f" **{who}** averaged more overall ({means[who]:.1f} vs {means[other]:.1f} per 100 words)."
+                    if who and other
+                    else ""
+                )
+                st.success(
+                    f"**Yes** — for {topic}, the two groups differ on total fillers "
+                    f"(p = {format_p(headline.p_value)}).{extra}"
+                )
+            elif not two_group and means:
+                bits = ", ".join(f"{k} {v:.1f}" for k, v in sorted(means.items(), key=lambda x: -x[1]))
+                st.success(
+                    f"**Yes** — overall filler use differs across {topic} "
+                    f"(p = {format_p(headline.p_value)}). Averages: {bits} per 100 words."
                 )
             else:
-                lines.append(
-                    f"**Main answer.** Yes — for {topic}, the groups differ overall "
+                st.success(
+                    f"**Yes** — groups differ on total fillers for {topic} "
                     f"(p = {format_p(headline.p_value)})."
                 )
-            lines.append(
-                "**What that means.** Your idea that the two groups use fillers differently "
-                "gets support here, at least for this data. You can say there is a real-looking gap, "
-                "but keep it tied to **this task and this sample** — not all speech everywhere."
-            )
         else:
-            lines.append(
-                f"**Main answer.** No clear overall gap for {topic} "
-                f"(p = {format_p(headline.p_value)}, above 0.05). "
-                "The two groups look pretty similar on **total** filler use."
+            if means:
+                bits = ", ".join(f"{k} {v:.1f}" for k, v in means.items())
+                st.info(
+                    f"**No clear difference** on **total** fillers for {topic} "
+                    f"(p = {format_p(headline.p_value)}). Averages were still: {bits} per 100 words."
+                )
+            else:
+                st.info(
+                    f"**No clear difference** on total fillers for {topic} "
+                    f"(p = {format_p(headline.p_value)})."
+                )
+    elif not sig:
+        st.warning("Not enough data to summarize.")
+        return
+
+    if sig and headline and not headline.significant:
+        st.markdown(
+            f"Even though **totals** look similar, **{len(sig)}** specific measure(s) still differed "
+            "(see green highlights). That is a **mix** story: same overall filling, different words."
+        )
+    elif sig and (not headline or headline.significant):
+        n_extra = len(sig) - (1 if headline and headline.significant else 0)
+        if n_extra > 0:
+            st.markdown(
+                f"Also check the greens for **specific words or categories** "
+                f"({n_extra} more beyond the headline)."
             )
-            lines.append(
-                "**What that means.** If you predicted a big overall difference, this part of the data "
-                "does **not** back that up. Check the table above — some **specific** words might still differ."
-            )
-    elif not all_results:
-        lines.append("**Main answer.** Not enough recordings to compare.")
-        return "\n\n".join(lines)
+
+
+def _render_paper_guidance(
+    *,
+    headline: CompareResult | None,
+    sig: list[CompareResult],
+    means: dict[str, float],
+    two_group: bool,
+) -> None:
+    bullets: list[str] = []
+
+    if headline and headline.significant:
+        bullets.append("State that your **main comparison** showed a statistically notable gap (p below 0.05).")
+        if two_group and len(means) == 2:
+            who = _higher_label(means)
+            if who:
+                bullets.append(f"Say **{who}** had the higher average rate in this sample, with the actual numbers from your table.")
+    elif headline and headline.p_value is not None:
+        bullets.append(
+            "Say your **overall** comparison did **not** reach significance — do not overclaim a big total difference."
+        )
 
     if sig:
-        words = _sig_word_list(sig)
-        if words:
-            lines.append(
-                f"**Specific words that differed** (p below 0.05): {words}. "
-                "These tell you **what kind** of filler is driving the gap (e.g. *uh* vs *like*)."
-            )
+        words = ", ".join(f"*{metric_label(r.comparison)}*" for r in sig[:6])
+        bullets.append(f"Mention **which fillers** drove the pattern (e.g. {words}).")
+        bullets.append("Give **one short transcript quote** that shows the pattern in real speech.")
     else:
-        lines.append(
-            "**Specific words.** Nothing else in the table hit p below 0.05. "
-            "Charts that look a little different might still be random noise."
-        )
+        bullets.append("Explain that groups looked **similar** on these measures in the UCLA slice you used.")
 
-    lines.append(f"**Other research.** {prior_work}")
-    lines.append(f"**So what / next steps.** {next_steps}")
+    bullets.append("Separate **Results** (numbers, p-values) from **Discussion** (interpretation, limits, links to other studies).")
 
-    return "\n\n".join(lines)
-
-
-def discussion_many_groups(
-    *,
-    topic: str,
-    hypothesis: str,
-    headline: CompareResult | None,
-    all_results: Sequence[CompareResult],
-    means: dict[str, float],
-    prior_work: str,
-    next_steps: str,
-) -> str:
-    sig = _sig_results(all_results)
-    if headline and headline.significant and headline not in sig:
-        sig = [headline] + sig
-
-    lines = [TERMS_BOX.strip(), f"**Our question.** {hypothesis}"]
-
-    if headline and headline.p_value is not None:
-        mean_bits = ", ".join(f"{k} ({v:.1f}/100 words)" for k, v in means.items())
-        if headline.significant:
-            lines.append(
-                f"**Main answer.** Yes — overall filler use **does** change across {topic} "
-                f"(p = {format_p(headline.p_value)}). Averages: {mean_bits}."
-            )
-            lines.append(
-                "**What that means.** The **task or mood** seems to affect **how much** people fill, "
-                "not just which words they pick."
-            )
-        else:
-            lines.append(
-                f"**Main answer.** No — **total** filler use does **not** clearly differ across {topic} "
-                f"(p = {format_p(headline.p_value)}). Averages were still: {mean_bits}."
-            )
-            lines.append(
-                "**What that means.** You probably **cannot** claim people fill more when annoyed vs happy "
-                "vs neutral overall. Focus instead on **which** fillers change (see table above)."
-            )
-    elif not all_results:
-        lines.append("**Main answer.** Not enough groups to compare.")
-        return "\n\n".join(lines)
-
-    pattern_sig = [
-        r for r in sig
-        if headline is None or _metric_short(r.comparison) not in _metric_short(headline.comparison)
-    ]
-    if pattern_sig:
-        words = _sig_word_list(pattern_sig)
-        lines.append(
-            f"**Specific words that differed:** {words}. "
-            "Same total fillers, but **different words** — that is a **mix change**, not just more noise."
-        )
-    elif not (headline and headline.significant):
-        lines.append(
-            "**Specific words.** Nothing hit p below 0.05. Treat small chart differences as weak evidence."
-        )
-
-    lines.append(f"**Other research.** {prior_work}")
-    lines.append(f"**So what / next steps.** {next_steps}")
-
-    return "\n\n".join(lines)
+    for b in bullets:
+        st.markdown(f"- {b}")
 
 
 PRIOR_GENDER = (
-    "Some older studies say women use more fillers or more *like* / *you know*. "
-    "Other work finds little difference, or the opposite on phone calls. Your results add one more real-data point."
+    "Some studies report women using more fillers or more *like* / *you know*; others find little gap or the opposite on phone speech. "
+    "Compare your green highlights to that literature — agreement where you see the same pattern, tension where you do not."
 )
 
 PRIOR_EMOTION = (
-    "People sometimes use more *um* when stressed or planning hard. Happy or angry stories might pull different "
-    "words. Lab retellings are not the same as real life, but they are still useful."
+    "Stress and planning can increase *um* and *uh*; narrative mood might change *which* words appear even when totals stay flat. "
+    "Lab retellings are not identical to real life, but they are still valid evidence if you state the limit."
 )
 
 PRIOR_SITUATION = (
-    "Reading aloud, talking to a researcher, and calling a friend are different jobs. "
-    "Fillers often go up when someone is thinking on the spot or talking back-and-forth."
+    "Reading aloud, monologue to a researcher, and live phone calls load the speaker differently. "
+    "Fillers often rise when someone is thinking on the spot or talking with another person."
 )
 
 NEXT_GENDER = (
-    "In your paper: say **whether** you found a gap, **who** used more, and **which words** (*uh*, *like*, etc.). "
-    "Mention limits: one recording per task, college speakers, regex counts. "
-    "Next: pull example quotes from transcripts that show the pattern."
+    "Pull 1–2 transcript quotes where the gap shows up. Note age 18–24 and phone-only scope. "
+    "If *like* was not green, say gender differences here were **not** mainly about *like*."
 )
 
 NEXT_EMOTION = (
-    "In your paper: if totals are flat, argue a **mix** story (more *um* here, more *you know* there). "
-    "Use transcript examples. Next: compare annoyed vs happy directly with adjusted tests if your class requires it."
+    "If only specific words were green, frame emotion as changing **filler type**, not **amount**. "
+    "Compare annoyed vs happy in prose using your pairwise table if any row was yellow."
 )
 
 NEXT_SITUATION = (
-    "In your paper: do not lump phone calls with vowel holds or sentence reading. "
-    "Compare **similar** tasks only. Next: filter to ages 18–24 or one task at a time for a cleaner story."
+    "Do not compare vowel holds or sentence reading to phone calls in one claim. "
+    "Re-run filters for a single task if you want a simpler Discussion paragraph."
 )

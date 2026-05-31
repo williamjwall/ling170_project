@@ -261,6 +261,6 @@ def render_metrics_results_table(
 
 
 def render_discussion_section(title: str, body: str, *, key: str) -> None:
-    """Discussion-style interpretation (not a duplicate of Results)."""
+    """Legacy markdown expander (prefer discussion.render_plain_english)."""
     with st.expander(title, expanded=False, key=key):
         st.markdown(body)
