@@ -1,7 +1,10 @@
 """
-Simple filler exploration for a linguistics project (Streamlit).
+Research findings dashboard for filler-word study (Streamlit).
 
-Run: streamlit run app.py
+Run from this folder:
+  streamlit run app.py
+
+Shows highlights, four hypotheses, and charts for phone (F/M) and emotion tasks.
 """
 
 from __future__ import annotations
@@ -916,130 +919,37 @@ def render_question2(emotion: pd.DataFrame, use_rate: bool, ycol: str) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Filler study", layout="wide")
+    st.set_page_config(page_title="Research findings · Filler study", layout="wide")
     inject_css()
 
     with st.sidebar:
-        st.header("Settings")
-        csv_path = st.text_input("Data file", value=str(DEFAULT_CSV))
-        use_rate = st.toggle("Show rates per 100 words", value=True)
-    try:
-        df, count_col = cached(csv_path)
-    except FileNotFoundError:
-        st.error("Could not find that file.")
-        st.stop()
-    except Exception as e:
-        st.exception(e)
-        st.stop()
-
-    if "L1 group" not in df.columns:
-        if "info_l1_english" in df.columns:
-            df["L1 group"] = df["info_l1_english"].map(l1_group)
-        else:
-            df["L1 group"] = "Unknown"
-
-    ycol = y_total(use_rate)
-    phone = df[df["task"] == PHONE].copy()
-    emotion = df[df["task"].isin(EMOTIONS)].copy()
-    fillers = list(ordered_fillers())
-
-    st.title("Filler Words at UCLA, 18 to 24 year olds")
-    st.write(
-        "This tool **counts filler words** in each recording, shows charts for your four research questions, "
-        "and runs **p-value checks** so you can see whether group differences are likely more than random noise."
-    )
-    st.caption(f"{len(df)} recordings loaded (male and female speakers).")
-
-    tab1, tab2, tab3, tab4, tab5, tab6, tab_findings = st.tabs(
-        [
-            "1. Phone and gender",
-            "2. Emotion stories",
-            "3. Phone and gender (categories)",
-            "4. Emotion stories (categories)",
-            "Research findings",
-            "Transcripts",
-            "Download data",
-        ]
-    )
-
-    with tab1:
-        render_question1(phone, use_rate, ycol)
-
-    with tab2:
-        render_question2(emotion, use_rate, ycol)
-
-    with tab3:
-        render_question3(phone, use_rate)
-
-    with tab4:
-        render_question4(emotion, use_rate)
-
-    with tab5:
-        render_research_findings_tab(
-            phone.loc[phone["words"] > 0],
-            emotion.loc[emotion["words"] > 0],
-            cohort_note="UCLA emotion + phone export · ages 18–24 speakers in CSV",
-        )
-
-    with tab6:
-        st.header("Read transcripts")
-        st.write(
-            "Highlighted words match our filler list. "
-            "**Blue** = placeholders, **orange** = Californese, **green** = feedback."
-        )
-        task_choice = st.selectbox("Task", ["All tasks", PHONE, *EMOTIONS])
-        view = df if task_choice == "All tasks" else df[df["task"] == task_choice].copy()
-        speakers = sorted(view["speaker_id"].unique().tolist())
-        mode = st.radio("Layout", ("Pick one transcript", "Several in collapsible panels"), horizontal=True)
-        chosen = st.multiselect(
-            "Which fillers to highlight (empty = all)",
-            options=fillers,
-            default=fillers,
-            format_func=display_phrase,
-        )
-        hl = set(chosen) if chosen else None
-
-        if mode == "Pick one transcript":
-            labels = [
-                transcript_label(r.speaker_id, r.task, r.info_sex, r.info_age, r.words)
-                for r in view.itertuples(index=False)
-            ]
-            if not labels:
-                st.info("Nothing to show for this filter.")
-            else:
-                i = st.selectbox("Transcript", range(len(labels)), format_func=lambda j: labels[j])
-                row = view.iloc[i]
-                st.markdown(f"**{labels[i]}**")
-                body = transcript_highlight_html(str(row.text), highlight=hl, for_display=True)
-                st.markdown(
-                    f'<div style="white-space: pre-wrap; line-height: 1.55;">{body}</div>',
-                    unsafe_allow_html=True,
-                )
-        else:
-            cap = st.slider("How many to list", 1, 20, 8)
-            pick_sp = st.multiselect("Limit to these speaker IDs (empty = everyone)", speakers, format_func=lambda x: str(int(x)))
-            v2 = view if not pick_sp else view[view["speaker_id"].isin(pick_sp)]
-            v2 = v2.sort_values(["speaker_id", "task"], kind="stable")
-            for _, row in v2.head(cap).iterrows():
-                title = transcript_label(
-                    row["speaker_id"], row["task"], row["info_sex"], row["info_age"]
-                )
-                with st.expander(title):
-                    body = transcript_highlight_html(str(row["text"]), highlight=hl, for_display=True)
-                    st.markdown(
-                        f'<div style="white-space: pre-wrap; line-height: 1.55;">{body}</div>',
-                        unsafe_allow_html=True,
-                    )
-
-    with tab7:
-        st.header("Download")
-        st.write("Spreadsheet includes word counts, totals, each filler, and the three category columns.")
+        st.header("Data")
+        csv_path = st.text_input("CSV file", value=str(DEFAULT_CSV))
+        st.caption("Default: `emotion_phone_simplified.csv` in this folder.")
+        try:
+            df, _count_col = cached(csv_path)
+        except FileNotFoundError:
+            st.error("Could not find that file.")
+            st.stop()
+        except Exception as e:
+            st.exception(e)
+            st.stop()
+        st.metric("Recordings loaded", len(df))
         st.download_button(
-            "Download CSV",
+            "Download enriched CSV",
             data=df.to_csv(index=False).encode("utf-8"),
             file_name="transcripts_with_fillers.csv",
             mime="text/csv",
         )
+
+    phone = df[df["task"] == PHONE].copy()
+    emotion = df[df["task"].isin(EMOTIONS)].copy()
+
+    render_research_findings_tab(
+        phone.loc[phone["words"] > 0],
+        emotion.loc[emotion["words"] > 0],
+        cohort_note="UCLA speakers ages 18–24 · phone + emotion tasks from your CSV",
+    )
 
 
 if __name__ == "__main__":

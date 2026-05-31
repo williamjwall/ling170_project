@@ -17,7 +17,7 @@ _REPO = Path(__file__).resolve().parent
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
-from filler_lexicon import CATEGORY_LABELS, CATEGORY_FOR_FILLER, ordered_fillers
+from filler_lexicon import CATEGORY_LABELS, category_for_filler, ordered_fillers
 from simple_stats import (
     collect_significant,
     compare_metrics_in_dataframe,
