@@ -20,6 +20,27 @@ from typing import Any, Dict, List, Tuple
 
 AMBIGUOUS_LEMMAS = frozenset({"like", "well", "so"})
 
+# Short plain English for Research UI (no parser jargon).
+HYBRID_FILTER_PLAIN_ENGLISH = """
+**Why these three words need a second pass.** *Like*, *well*, and *so* can be **fillers** (structuring talk) or **normal grammar** (verb, preposition, “very”, connector).
+
+**How we filter grammar out (hybrid counts):**
+1. **Find** every *like*, *well*, and *so* in the transcript (same word search as the rest of the app).
+2. **Parse** the line with spaCy so each hit gets a grammar label (verb, preposition, interjection, and so on).
+3. **Drop** hits that match simple “this is grammar” rules, for example:
+   - *like* as a **verb** (“I **like** cats”) or **preposition** (“sounds **like** her”)
+   - *well* meaning **good** or manner (“did **well**”), not a sentence opener (“**Well**, I don’t know”)
+   - *so* as **very** (“**so** cold”), **connector** (“rained, **so** I stayed”), not a turn starter (“**So**, we left”)
+4. **Count** what is left as filler for those three words only. All other fillers (*um*, *you know*, …) stay on word search only.
+
+Full before/after examples live on the **Hybrid pilot** tab. On **Emotion** and **Phone**, turn on the hybrid checkbox when your CSV has precomputed columns.
+"""
+
+
+def hybrid_filter_plain_english() -> str:
+    return HYBRID_FILTER_PLAIN_ENGLISH.strip()
+
+
 _RE_LIKE = re.compile(r"\blike\b", re.I)
 _RE_WELL = re.compile(r"\bwell\b", re.I)
 _RE_SO = re.compile(r"\bso\b", re.I)

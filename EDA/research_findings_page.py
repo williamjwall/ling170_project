@@ -28,6 +28,11 @@ from simple_stats import (
 )
 from stats_display import _style_pairwise_table
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+from hybrid_filler_spacy import hybrid_filter_plain_english
+
 PHONE = "phonecall"
 EMO_TASKS = ("neutral", "happy", "annoyed")
 EMO_LABELS = {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
@@ -438,6 +443,17 @@ def fig_emotion_categories(emotion: pd.DataFrame) -> go.Figure:
     return fig
 
 
+def render_like_well_so_filter_note(*, charts_use_regex: bool = True) -> None:
+    """Very short note on grammatical vs filler *like* / *well* / *so*."""
+    with st.expander("How we separate filler *like*, *well*, and *so* from grammar", expanded=False):
+        st.markdown(hybrid_filter_plain_english())
+        if charts_use_regex:
+            st.caption(
+                "Charts on this tab count every spelling of those three words (word search). "
+                "Use the hybrid checkbox on Emotion or Phone, or open Hybrid pilot, for grammar filtered counts."
+            )
+
+
 def _hypothesis_verdict_card(title: str, question: str, supported: str | None, detail: str) -> None:
     st.markdown(f"#### {title}")
     st.markdown(f"*{question}*")
@@ -614,6 +630,7 @@ def render_research_findings_tab(
     st.markdown(
         "Four hypotheses · **interesting** results (p below 0.05) · charts = fillers per 100 words (each dot = one recording)."
     )
+    render_like_well_so_filter_note(charts_use_regex=True)
 
     phone = phone.loc[phone["words"] > 0] if "words" in phone.columns else phone
     emotion = emotion.loc[emotion["words"] > 0] if "words" in emotion.columns else emotion

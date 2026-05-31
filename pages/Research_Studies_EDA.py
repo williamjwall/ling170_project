@@ -23,6 +23,7 @@ from hybrid_filler_spacy import (
     HYBRID_NUMERIC_COLS,
     HYBRID_OCCURRENCES_JSON_COL,
     attach_hybrid_occurrences_column,
+    hybrid_filter_plain_english,
     hybrid_numeric_precomputed,
 )
 from streamlit_app import (
@@ -228,6 +229,9 @@ def render_filler_tab_emotion_tasks(f_base: pd.DataFrame, *, widget_key_prefix: 
                 "Hybrid columns not found on this CSV. Run locally: "
                 "`python scripts/precompute_hybrid_columns.py` so `ucla_text_state_parsed_with_hybrid.csv` exists at the fixed corpus path."
             )
+    else:
+        with st.expander("How we filter grammatical *like*, *well*, *so* (off until checkbox is on)", expanded=False):
+            st.markdown(hybrid_filter_plain_english())
 
     total_words = int(fw_display["_word_count"].sum())
     m1, m2 = st.columns(2)
@@ -296,6 +300,9 @@ def render_filler_tab_phone_sex_only(f_base: pd.DataFrame, *, widget_key_prefix:
                 "Hybrid columns not found on this CSV. Run locally: "
                 "`python scripts/precompute_hybrid_columns.py` so `ucla_text_state_parsed_with_hybrid.csv` exists at the fixed corpus path."
             )
+    else:
+        with st.expander("How we filter grammatical *like*, *well*, *so* (off until checkbox is on)", expanded=False):
+            st.markdown(hybrid_filter_plain_english())
 
     total_words = int(fw_display["_word_count"].sum())
     total_hits = int(fw_display["_filler_total"].sum())
@@ -358,6 +365,8 @@ def cohort_header(work: pd.DataFrame) -> None:
 
 def render_hybrid_intro_and_flow() -> None:
     """Readable intro for the hybrid pilot; heavy detail lives in one appendix expander."""
+    with st.expander("In plain English: filtering grammatical *like*, *well*, *so*", expanded=True):
+        st.markdown(hybrid_filter_plain_english())
     st.markdown(
         "**What this pilot adds.** The main Fillers tab counts **fixed strings** in the transcript. "
         "That is fine for *um*, *you know*, and most items—but **like**, **well**, and **so** are special: "
