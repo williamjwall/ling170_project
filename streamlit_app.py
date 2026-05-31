@@ -28,6 +28,7 @@ from stats_display import (
     render_multi_group_block,
     render_two_group_block,
 )
+from research_findings_page import render_research_findings_from_raw
 from discussion import (
     NEXT_EMOTION,
     NEXT_GENDER,
@@ -1397,8 +1398,8 @@ def main() -> None:
 
     f = apply_filters(df, cfg)
 
-    tab_about, tab_overview, tab_browse, tab_summary, tab_filler = st.tabs(
-        ["About", "Overview", "Browse", "Task stats", "Fillers"]
+    tab_about, tab_overview, tab_browse, tab_summary, tab_filler, tab_findings = st.tabs(
+        ["About", "Overview", "Browse", "Task stats", "Fillers", "Research findings"]
     )
 
     with tab_about:
@@ -1507,6 +1508,16 @@ def main() -> None:
 
     with tab_filler:
         render_filler_tab(f)
+
+    with tab_findings:
+        render_research_findings_from_raw(
+            f,
+            attach_fn=attach_filler_columns,
+            age_min=18,
+            age_max=24,
+            min_words=20,
+            cohort_note="Ages 18–24 · uses sidebar filters above",
+        )
 
 
 if __name__ == "__main__":

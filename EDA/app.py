@@ -26,6 +26,7 @@ from stats_display import (
     render_multi_group_block,
     render_two_group_block,
 )
+from research_findings_page import render_research_findings_tab
 from discussion import (
     NEXT_EMOTION,
     NEXT_GENDER,
@@ -949,12 +950,13 @@ def main() -> None:
     )
     st.caption(f"{len(df)} recordings loaded (male and female speakers).")
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
+    tab1, tab2, tab3, tab4, tab5, tab6, tab_findings = st.tabs(
         [
             "1. Phone and gender",
             "2. Emotion stories",
             "3. Phone and gender (categories)",
             "4. Emotion stories (categories)",
+            "Research findings",
             "Transcripts",
             "Download data",
         ]
@@ -973,6 +975,13 @@ def main() -> None:
         render_question4(emotion, use_rate)
 
     with tab5:
+        render_research_findings_tab(
+            phone.loc[phone["words"] > 0],
+            emotion.loc[emotion["words"] > 0],
+            cohort_note="UCLA emotion + phone export · ages 18–24 speakers in CSV",
+        )
+
+    with tab6:
         st.header("Read transcripts")
         st.write(
             "Highlighted words match our filler list. "
@@ -1022,7 +1031,7 @@ def main() -> None:
                         unsafe_allow_html=True,
                     )
 
-    with tab6:
+    with tab7:
         st.header("Download")
         st.write("Spreadsheet includes word counts, totals, each filler, and the three category columns.")
         st.download_button(

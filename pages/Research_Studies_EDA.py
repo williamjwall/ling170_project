@@ -38,6 +38,10 @@ from streamlit_app import (
     render_filler_pvalues_sex,
 )
 
+if str(REPO_ROOT / "EDA") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "EDA"))
+from research_findings_page import render_research_findings_from_raw
+
 RESEARCH_EXPORTS = REPO_ROOT / "ucla_box_parsed" / "research_exports"
 
 
@@ -841,12 +845,24 @@ def main() -> None:
     study = st.radio(
         "Section",
         [
+            "Research findings",
             "Emotion tasks (neutral, happy, annoyed)",
             "Phone (female vs male)",
             "Hybrid pilot (like, well, so)",
         ],
         horizontal=True,
     )
+
+    if study.startswith("Research"):
+        render_research_findings_from_raw(
+            df_base,
+            attach_fn=attach_filler_columns,
+            age_min=AGE_MIN,
+            age_max=AGE_MAX,
+            min_words=20,
+            cohort_note=f"Ages {AGE_MIN}–{AGE_MAX} · orthographic transcripts",
+        )
+        return
 
     if study.startswith("Hybrid"):
         render_hybrid_pilot_full_page(df_base)
