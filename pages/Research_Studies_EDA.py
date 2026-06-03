@@ -696,7 +696,6 @@ def render_hybrid_parser_cues_deep_dive() -> None:
     Kept separate so the rest of the tab stays scannable.
     """
     st.markdown("---")
-    st.markdown("### Deep dive · Parser cues we use (when spaCy cooperates)")
     st.caption(
         """THis is to see the logic behind the classification. It tore me apart for a bit, destroyed my sanity and is LONG.
         
