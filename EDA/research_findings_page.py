@@ -35,6 +35,7 @@ from hybrid_filler_spacy import hybrid_filter_plain_english
 
 PHONE = "phonecall"
 EMO_TASKS = ("neutral", "happy", "annoyed")
+EMO_STORY_ORDER = ("annoyed", "neutral", "happy")  # display order: neutral in the middle
 EMO_LABELS = {"neutral": "Neutral", "happy": "Happy", "annoyed": "Annoyed"}
 COL_F = "#5b8def"
 COL_M = "#e85d8a"
@@ -392,11 +393,12 @@ def fig_emotion_lines_top(emotion: pd.DataFrame, top_n: int = 6) -> go.Figure | 
     if not cols:
         return None
     top_cols = sub[cols].mean().sort_values(ascending=False).head(top_n).index
+    story_labels = [EMO_LABELS[t] for t in EMO_STORY_ORDER]
     rows = []
     for c in top_cols:
         w = c.replace("rate ", "")
         label = "I mean" if w == "i mean" else w
-        for t in EMO_TASKS:
+        for t in EMO_STORY_ORDER:
             g = sub.loc[sub["task"] == t]
             if len(g):
                 rows.append({"Story": EMO_LABELS[t], "Filler": label, "Rate": _mean_rate(g, c)})
@@ -407,8 +409,8 @@ def fig_emotion_lines_top(emotion: pd.DataFrame, top_n: int = 6) -> go.Figure | 
         y="Rate",
         color="Filler",
         markers=True,
-        category_orders={"Story": ["Neutral", "Happy", "Annoyed"]},
-        title="How top fillers move across neutral → happy → annoyed",
+        category_orders={"Story": story_labels},
+        title="How top fillers move across annoyed → neutral → happy",
         labels={"Rate": "Per 100 words"},
         color_discrete_sequence=px.colors.qualitative.Vivid,
     )
